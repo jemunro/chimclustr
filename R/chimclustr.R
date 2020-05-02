@@ -61,7 +61,7 @@ test_data <- function() {
 
 test_matrix <- function(data = test_data()) {
   data %>%
-    select(-pos) %>%
+    select(vid, read_data) %>%
     unnest(read_data) %>%
     spread(rid, allele) %>%
     arrange(vid) %>%
@@ -161,7 +161,6 @@ enum_chimeras <- function(haps, var_pos, ts_max) {
 
   chime_space <-
     full_join(hap_space, ts_space_short, 'ns') %>%
-    select(-ns) %>%
     mutate(hap_hash = map2_chr(haps, tsid, function(h, i) digest(h[ts_state[i,]]))) %>%
     group_by(hap_hash) %>%
     (function(x) {
@@ -181,7 +180,7 @@ enum_chimeras <- function(haps, var_pos, ts_max) {
     chime_space <- mutate(chime_space, !!v := map_int(hap_state, ~ sum(. == h)) / n_var)
   }
 
-  chime_space <- select(chime_space, chid, ids, alleles, starts_with('p'))
+  chime_space <- select(chime_space, chid, ids, ns, alleles, starts_with('p'))
 
   return(list(hap_space = hap_space,
               ts_space = ts_space_long,
@@ -214,27 +213,61 @@ chimera_lh <- function(chimeras, hap_prop, ts_rate) {
 }
 
 read_chimera_dist <- function(read_alleles,
-                              chimera_alleles) {
+                               chimera_alleles,
+                               read_derep = NULL,
+                               chimera_derep = NULL) {
 
-  expand_grid(r_index = seq_len(ncol(read_alleles)),
-              c_index = seq_len(ncol(chimera_alleles))) %>%
-    mutate(dist = map2_int(r_index, c_index,
-                           ~ sum(read_alleles[, .x] != chimera_alleles[, .y])))
+  n_read <- ncol(read_alleles)
+  n_chim <- ncol(chimera_alleles)
+  n_var <- nrow(read_alleles)
 
+  dist_mat <- matrix(0L, ncol = n_read, nrow = n_chim)
+
+  for (i in seq_len(n_var)) {
+    var_set <- union(unique(read_alleles[i, ]),
+                     unique(chimera_alleles[i, ]))
+    for (v in var_set) {
+      read_set <- which(read_alleles[i,] == v)
+      chim_set <- which(chimera_alleles[i,] == v)
+      dist_mat[chim_set, read_set] <- dist_mat[chim_set, read_set] + 1L
+    }
+  }
+
+  dist_mat <- n_var - dist_mat
+
+  if (!is.null(read_derep)) {
+    dist_mat_2 <- matrix(0L, ncol = sum(lengths(read_derep)), nrow = nrow(dist_mat))
+    for (i in seq_along(read_derep)) {
+      dist_mat_2[, read_derep[[i]]] <- dist_mat[, i]
+    }
+    dist_mat <- dist_mat_2
+  }
+
+  if (!is.null(chimera_derep)) {
+    dist_mat_2 <- matrix(0L, ncol = sum(lengths(chimera_derep)), nrow = ncol(dist_mat))
+    for (i in seq_along(chimera_derep)) {
+      dist_mat_2[, chimera_derep[[i]]] <- dist_mat[i,]
+    }
+    dist_mat <- t(dist_mat_2)
+  }
+
+  return(dist_mat)
 }
 
-derep_allele_set <- function(allele_mat) {
+derep_allele_set <- function(allele_mat, id = 'id') {
   tibble(index = seq_len(ncol(allele_mat))) %>%
     mutate(hash = map_chr(index, ~ digest(allele_mat[, .]))) %>%
-    group_by(hash) %>%
-    mutate(group = index[1]) %>%
-    add_count() %>%
-    ungroup() %>%
-    select(-hash)
+    chop(index) %>%
+    mutate(rep = map_int(index, first),
+           !! id := seq_len(n()),
+           n = lengths(index)) %>%
+    select(!! id, rep, n, indices = index)
 }
 
-
 run_test <- function() {
+
+  # works pretty well
+  # probably better to have independant var error rates
 
   ## init
   data <- test_data()
@@ -255,35 +288,95 @@ run_test <- function() {
 
   meds <- pam$medoids
 
-  vars_diff <- which(read_allele_mat[, meds[1]] != read_allele_mat[, meds[2]])
+  hap_prop <-
+    pam$clustering %>%
+    table() %>%
+    {. / sum(.) } %>%
+    set_names(meds)
+
+  vars_diff <-
+    read_allele_mat[, meds] %>%
+    apply(1, function(x) n_distinct(x) > 1) %>%
+    which()
+
+  n_var <- length(vars_diff)
+
   read_allele_mat <- read_allele_mat[vars_diff, ]
-  read_allele_derep_key <- derep_allele_set(read_allele_mat)
-  read_allele_derep <- read_allele_mat[, unique(read_allele_derep_key$group)]
+  n_read <- ncol(read_allele_mat)
+  read_allele_derep_df <- derep_allele_set(read_allele_mat, 'rid')
+  read_allele_derep <- read_allele_mat[, unique(read_allele_derep_df$rep)]
 
   haps <-
     as.integer(read_allele_mat[, meds]) %>%
     matrix(nrow = nrow(read_allele_mat))
 
   var_pos <- data$pos[vars_diff]
-  hap_prop <- c(0.49, 0.51)
+  var_width <- last(var_pos) - first(var_pos)
   ts_rate <- 1/10000
-  ts_max <- 3
   error_rate <- 1/100
 
-  chims <- enum_chimeras(haps, var_pos = var_pos, ts_max = 2)
+  chims <- enum_chimeras(haps, var_pos = var_pos, ts_max = 3)
+  n_chim <- nrow(chims$chime_space)
   chim_alleles <- chims$chime_space$alleles %>% do.call('cbind', .)
-  chim_allele_derep_key <- derep_allele_set(chim_alleles)
-  chim_allele_derep <- chim_alleles[, unique(chim_allele_derep_key$group)]
+  chim_allele_derep_df <- derep_allele_set(chim_alleles, 'cid')
+  chim_allele_derep <- chim_alleles[, unique(chim_allele_derep_df$rep)]
 
-  read_chim_dist <- read_chimera_dist(read_allele_derep, chim_allele_derep)
+  read_chim_dist <- read_chimera_dist(read_allele_derep,
+                                      chim_allele_derep,
+                                      chimera_derep = chim_allele_derep_df$indices,
+                                      read_derep = read_allele_derep_df$indices)
+  n_iter <- 0L
+  max_iter <- 10L
 
-  ## Expecation
-  read_chim_lh <- mutate(read_chim_dist, lh = dist * log(error_rate))
-  chims_lh <- chimera_lh(chims, hap_prop, ts_rate)
-  # expand to matrix n_read by n_chimera of complete lh
+  res <- tibble(iter = integer(),
+                LH = double(),
+                ts_rate = double(),
+                error_rate = double(),
+                hap_prop = list())
 
-  ## Maximisation
+  while(n_iter < max_iter) {
+    n_iter <- n_iter + 1L
+    ## Expecation
+    chim_lh <- chimera_lh(chims, hap_prop, ts_rate)
 
+    # log lh
+    read_chim_lh <-
+      read_chim_dist * log(error_rate) + chim_lh$lh
 
-  ## compare M step speed with Rcgmin, optim(GC) and LBFGS
+    read_chim_lh_norm <-
+      read_chim_lh %>%
+      exp() %>%
+      apply(2, function(x) x / sum(x))
+
+    # lh
+    read_chim_lh_norm_rs <- rowSums(read_chim_lh_norm)
+
+    LH <-
+      read_chim_lh %>%
+      exp() %>%
+      colSums() %>%
+      log() %>% sum()
+
+    ## Maximisation
+    hap_prop <-
+      select(chims$chime_space, starts_with('p')) %>%
+      map_dbl(~ weighted.mean(., read_chim_lh_norm_rs))
+
+    ts_rate <- weighted.mean(chims$chime_space$ns, read_chim_lh_norm_rs) / var_width
+
+    error_rate <- weighted.mean(read_chim_dist, read_chim_lh_norm) / n_var
+
+    res <- add_row(res,
+                   iter = n_iter,
+                   LH = LH,
+                   ts_rate = ts_rate,
+                   error_rate = error_rate,
+                   hap_prop = list(hap_prop))
+
+  }
+
+  res <-
+    res %>%
+    mutate(hap_prop = map(hap_prop, ~ as_tibble(as.list(.))) ) %>%
+    unnest(hap_prop)
 }
