@@ -254,6 +254,37 @@ read_chimera_dist <- function(read_alleles,
   return(dist_mat)
 }
 
+read_chimera_match <- function(read_alleles,
+                                  chimera_alleles) {
+
+  n_read <- ncol(read_alleles)
+  n_chim <- ncol(chimera_alleles)
+  n_var <- nrow(read_alleles)
+
+  map(seq_len(n_var), function(i) {
+      var_set <- union(unique(read_alleles[i, ]),
+                       unique(chimera_alleles[i, ]))
+      map(var_set, function(v) {
+        ri <- which(read_alleles[i,] == v) %>% unname()
+        ci <- which(chimera_alleles[i,] == v) %>% unname()
+        if (length(ri) > 0 && length(ci) > 0) {
+          list(ri = ri, ci = ci)
+        }
+      }) %>% keep(~ !is.null(.))
+    })
+}
+
+read_chimera_match_sub <- function(match_list,
+                                  n_read,
+                                  n_chim,
+                                  x0, x1) {
+  res_mat <- matrix(x0, ncol = n_read, nrow = n_chim)
+  for (it in match_list) {
+    res_mat[it$ci, it$ri] <- x1
+  }
+  return(res_mat)
+}
+
 derep_allele_set <- function(allele_mat, id = 'id') {
   tibble(index = seq_len(ncol(allele_mat))) %>%
     mutate(hash = map_chr(index, ~ digest(allele_mat[, .]))) %>%
@@ -264,16 +295,169 @@ derep_allele_set <- function(allele_mat, id = 'id') {
     select(!! id, rep, n, indices = index)
 }
 
+#' @importFrom rlang is_bool is_integer is_scalar_double
+hap_mix_em <- function(read_allele_mat,
+                       var_pos,
+                       haps,
+                       hap_prop,
+                       ts_rate,
+                       error_rate,
+                       max_iter = 50,
+                       fixed_hap_prop = FALSE,
+                       flat_error_rate = FALSE,
+                       epsilon = 1e-3) {
+
+  stopifnot(is.matrix(read_allele_mat),
+            is_integer(read_allele_mat),
+            is_integer(var_pos),
+            length(var_pos) == nrow(read_allele_mat),
+            is.matrix(haps) && ncol(haps) > 1L,
+            nrow(haps) == nrow(read_allele_mat),
+            is_double(hap_prop),
+            length(hap_prop) == ncol(haps),
+            all(hap_prop > 0),
+            is_scalar_double(ts_rate),
+            ts_rate > 0 && ts_rate < 1,
+            is_scalar_double(error_rate),
+            error_rate > 0 && error_rate < 1,
+            is_bool(fixed_hap_prop),
+            is_bool(flat_error_rate),
+            is_scalar_double(epsilon),
+            epsilon > 0)
+
+  hap_prop <- hap_prop / sum(hap_prop)
+
+  n_var <- length(var_pos)
+  n_read <- ncol(read_allele_mat)
+  var_width <- last(var_pos) - first(var_pos)
+  if (! flat_error_rate) {
+    error_rate <- rep(error_rate, n_var)
+  }
+  # note that this is the most time consuming step
+  chims <- enum_chimeras(haps, var_pos = var_pos, ts_max = 3)
+  n_chim <- nrow(chims$chime_space)
+  chim_alleles <- chims$chime_space$alleles %>% do.call('cbind', .)
+
+  read_chim_dist <- read_chimera_dist(read_allele_mat,
+                                      chim_alleles)
+  read_chim_ident <- n_var - read_chim_dist
+  read_chim_match <- read_chimera_match(read_allele_mat, chim_alleles)
+
+  n_iter <- 0L
+  LH <- -Inf
+  res <- tibble(iter = integer(),
+                LH = double(),
+                ts_rate = double(),
+                error_rate = list(),
+                hap_prop = list())
+
+  while(n_iter < max_iter) {
+    n_iter <- n_iter + 1L
+
+    ## Expecation
+    chim_lh <- chimera_lh(chims, hap_prop, ts_rate)
+
+    # log lh
+    if (flat_error_rate || all(error_rate[1] == error_rate)) {
+      read_chim_lh <-
+        (read_chim_dist * log(error_rate[1])) +
+        (read_chim_ident * log(1-error_rate[1])) +
+        chim_lh$lh
+    } else {
+      read_chim_lh <-
+        map(seq_len(n_var), function(i) {
+          read_chimera_match_sub(match_list = read_chim_match[[i]],
+                                 n_read = n_read,
+                                 n_chim = n_chim,
+                                 x0 = log(error_rate[i]),
+                                 x1 = log(1 - error_rate[i]))
+        }) %>%
+        reduce(`+`) +
+        chim_lh$lh
+    }
+
+    read_chim_lh_norm <-
+      read_chim_lh %>%
+      exp() %>%
+      apply(2, function(x) x / sum(x))
+
+    # lh
+    read_chim_lh_norm_rs <- rowSums(read_chim_lh_norm)
+
+    LH_last <- LH
+
+    LH <-
+      read_chim_lh %>%
+      exp() %>%
+      colSums() %>%
+      log() %>% sum()
+
+    # record results
+    res <- add_row(res,
+                   iter = n_iter,
+                   LH = LH,
+                   ts_rate = ts_rate,
+                   error_rate = list(error_rate),
+                   hap_prop = list(hap_prop))
+
+    if (epsilon > LH - LH_last) {
+      break
+    }
+
+    ## Maximisation
+    if (!fixed_hap_prop) {
+      hap_prop <-
+        select(chims$chime_space, starts_with('p')) %>%
+        map_dbl(~ weighted.mean(., read_chim_lh_norm_rs))
+    }
+
+    ts_rate <- weighted.mean(chims$chime_space$ns, read_chim_lh_norm_rs) / var_width
+
+    if (flat_error_rate) {
+       error_rate <- weighted.mean(read_chim_dist, read_chim_lh_norm) / n_var
+    } else {
+      error_rate <- map_dbl(seq_len(n_var), function(i) {
+        read_chimera_match_sub(match_list = read_chim_match[[i]],
+                               n_read = n_read,
+                               n_chim = n_chim,
+                               x0 = 1,
+                               x1 = 0) %>%
+          weighted.mean(read_chim_lh_norm)
+      })
+    }
+  }
+
+  return(res)
+}
+
+#' @importFrom rlang is_integerish
+#' @importFrom magrittr '%<>%'
+a_mult_d3 <- function(a, x) {
+  stopifnot(is.array(a),
+            is.vector(x),
+            length(dim(a)) >= 3,
+            dim(a)[3] == length(x))
+  for (i in seq_along(x)) {
+    a[ , , i] %<>% { . * x[i] }
+  }
+  return(a)
+}
+
 run_test <- function() {
 
-  # works pretty well
-  # probably better to have independant var error rates
+  # would be good to filter outliers here...
+  # based on dist from medoids
+  # but we need selected reads to be present across different clusterings for LH to be comparable (similarly all vars)
+  # soo... whithin 1/0.5 * max_center_dist
 
-  ## init
+  # add modes for fixed hap prop - this will be better for assigning discrete ploidies
+  # output should be read_id + ML state ? (e.g. cluster_1:0.95, cluster_2:0.05, error: 0.25)
+  #     or fuzzy state - e.g. p(cluster_1), p(cluster_2), p(chimera)
+  #     or simply cluster_id + cluster_dist
+
   data <- test_data()
   read_allele_mat <- test_matrix(data)
-  read_allele_mat[is.na(read_allele_mat)] <- -1
-
+  read_allele_mat[is.na(read_allele_mat)] <- -1L
 
   read_allele_tbl <-
     t(read_allele_mat) %>%
@@ -288,95 +472,77 @@ run_test <- function() {
 
   meds <- pam$medoids
 
-  hap_prop <-
-    pam$clustering %>%
-    table() %>%
-    {. / sum(.) } %>%
-    set_names(meds)
-
   vars_diff <-
     read_allele_mat[, meds] %>%
     apply(1, function(x) n_distinct(x) > 1) %>%
     which()
 
-  n_var <- length(vars_diff)
-
   read_allele_mat <- read_allele_mat[vars_diff, ]
-  n_read <- ncol(read_allele_mat)
-  read_allele_derep_df <- derep_allele_set(read_allele_mat, 'rid')
-  read_allele_derep <- read_allele_mat[, unique(read_allele_derep_df$rep)]
 
   haps <-
     as.integer(read_allele_mat[, meds]) %>%
     matrix(nrow = nrow(read_allele_mat))
 
   var_pos <- data$pos[vars_diff]
-  var_width <- last(var_pos) - first(var_pos)
-  ts_rate <- 1/10000
-  error_rate <- 1/100
 
-  chims <- enum_chimeras(haps, var_pos = var_pos, ts_max = 3)
-  n_chim <- nrow(chims$chime_space)
-  chim_alleles <- chims$chime_space$alleles %>% do.call('cbind', .)
-  chim_allele_derep_df <- derep_allele_set(chim_alleles, 'cid')
-  chim_allele_derep <- chim_alleles[, unique(chim_allele_derep_df$rep)]
+  # em_res_1 <- hap_mix_em(read_allele_mat = read_allele_mat,
+  #                        var_pos = var_pos,
+  #                        haps = haps,
+  #                        hap_prop = c(0.5, 0.5),
+  #                        ts_rate = 1e-4,
+  #                        error_rate = 1e-1,
+  #                        max_iter = 50,
+  #                        fixed_hap_prop = FALSE,
+  #                        flat_error_rate = FALSE)
+  #
+  # em_res_1f <- hap_mix_em(read_allele_mat = read_allele_mat,
+  #                         var_pos = var_pos,
+  #                         haps = haps,
+  #                         hap_prop = c(0.5, 0.5),
+  #                         ts_rate = 1e-4,
+  #                         error_rate = 1e-1,
+  #                         max_iter = 50,
+  #                         fixed_hap_prop = TRUE,
+  #                         flat_error_rate = TRUE)
 
-  read_chim_dist <- read_chimera_dist(read_allele_derep,
-                                      chim_allele_derep,
-                                      chimera_derep = chim_allele_derep_df$indices,
-                                      read_derep = read_allele_derep_df$indices)
-  n_iter <- 0L
-  max_iter <- 10L
+  em_res_1v <- hap_mix_em(read_allele_mat = read_allele_mat,
+                         var_pos = var_pos,
+                         haps = haps,
+                         hap_prop = c(0.5, 0.5),
+                         ts_rate = 1e-4,
+                         error_rate = 1e-1,
+                         max_iter = 50,
+                         fixed_hap_prop = FALSE,
+                         flat_error_rate = FALSE)
 
-  res <- tibble(iter = integer(),
-                LH = double(),
-                ts_rate = double(),
-                error_rate = double(),
-                hap_prop = list())
+  em_res_1fv <- hap_mix_em(read_allele_mat = read_allele_mat,
+                           var_pos = var_pos,
+                           haps = haps,
+                           hap_prop = c(0.5, 0.5),
+                           ts_rate = 1e-4,
+                           error_rate = 1e-1,
+                           max_iter = 50,
+                           fixed_hap_prop = TRUE,
+                           flat_error_rate = FALSE)
 
-  while(n_iter < max_iter) {
-    n_iter <- n_iter + 1L
-    ## Expecation
-    chim_lh <- chimera_lh(chims, hap_prop, ts_rate)
+  em_res_1fv_21 <- hap_mix_em(read_allele_mat = read_allele_mat,
+                              var_pos = var_pos,
+                              haps = haps,
+                              hap_prop = c(0.67, 0.33),
+                              ts_rate = 1e-4,
+                              error_rate = 1e-1,
+                              max_iter = 50,
+                              fixed_hap_prop = TRUE,
+                              flat_error_rate = FALSE)
 
-    # log lh
-    read_chim_lh <-
-      read_chim_dist * log(error_rate) + chim_lh$lh
+  em_res_1fv_12 <- hap_mix_em(read_allele_mat = read_allele_mat,
+                              var_pos = var_pos,
+                              haps = haps,
+                              hap_prop = c(0.33, 0.67),
+                              ts_rate = 1e-4,
+                              error_rate = 1e-1,
+                              max_iter = 50,
+                              fixed_hap_prop = TRUE,
+                              flat_error_rate = FALSE)
 
-    read_chim_lh_norm <-
-      read_chim_lh %>%
-      exp() %>%
-      apply(2, function(x) x / sum(x))
-
-    # lh
-    read_chim_lh_norm_rs <- rowSums(read_chim_lh_norm)
-
-    LH <-
-      read_chim_lh %>%
-      exp() %>%
-      colSums() %>%
-      log() %>% sum()
-
-    ## Maximisation
-    hap_prop <-
-      select(chims$chime_space, starts_with('p')) %>%
-      map_dbl(~ weighted.mean(., read_chim_lh_norm_rs))
-
-    ts_rate <- weighted.mean(chims$chime_space$ns, read_chim_lh_norm_rs) / var_width
-
-    error_rate <- weighted.mean(read_chim_dist, read_chim_lh_norm) / n_var
-
-    res <- add_row(res,
-                   iter = n_iter,
-                   LH = LH,
-                   ts_rate = ts_rate,
-                   error_rate = error_rate,
-                   hap_prop = list(hap_prop))
-
-  }
-
-  res <-
-    res %>%
-    mutate(hap_prop = map(hap_prop, ~ as_tibble(as.list(.))) ) %>%
-    unnest(hap_prop)
 }
