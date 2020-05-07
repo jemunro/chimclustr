@@ -63,26 +63,9 @@ maximise <- function(x, ps, weighted = TRUE) {
   return(list(mu = mu, sigma = sigma))
 }
 
+em_test <- function() {
+  sm <- gm_sample(mu = c(0, 3))
+  mt_res <- mixtools::normalmixEM(sm$x)
+}
 
-sm <- gm_sample()
-x <- sm$x
-p <- table(sm$mu) / length(x)
-
-
-x <- c(rnorm(500, mean = 0), rnorm(500, mean = 2))
-res_w <- gmm_em(x)
-
-res_w %>%
-  gather(-iter, -cluster, key = 'param', value = 'value') %>%
-  ggplot(aes(iter, value, col = cluster)) +
-  geom_line() +
-  facet_wrap(~ param, scales = 'free', nrow = 1)
-
-# unweighted version does not work
-# res_uw <- gmm_em(x, weighted = F)
-# res_uw %>%
-#   gather(-iter, -cluster, key = 'param', value = 'value') %>%
-#   ggplot(aes(iter, value, col = cluster)) +
-#   geom_line() +
-#   facet_wrap(~ param, scales = 'free', nrow = 1)
 

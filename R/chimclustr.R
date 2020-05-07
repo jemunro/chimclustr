@@ -90,97 +90,156 @@ enum_chimeras <- function(haps, var_pos, ts_max) {
   var_dist <- as.integer(as.matrix(dist(var_pos))) %>%
     { matrix(., ncol = n_var)}
 
-  hap_space <-
-    seq_len(ts_max + 1) %>%
-    map_df(function(nh) {
-      list(seq_len(n_hap)) %>%
-        rep(nh) %>%
-        setNames(., seq_along(.))%>%
-        do.call('expand_grid', .) %>%
-        mutate(id = seq_len(n())) %>%
-        gather(-id, key = 'index', value = 'haps') %>%
-        arrange(id, index) %>%
-        select(-index) %>%
-        mutate(ns = nh - 1) %>%
-        chop(haps) %>%
-        select(-id)
-    }) %>%
-    mutate(hsid = seq_len(n()))
+  if (n_hap == 1) {
+    hap_space <-
+      tibble(ns = 0,
+             haps = list(1L),
+             hsid = 1L)
 
-  ts_space <-
-    seq_len(ts_max) %>%
-    map_df(function(ne) {
-      list(seq_len(n_var-1)) %>%
-        rep(ne) %>%
-        setNames(., seq_along(.)) %>%
-        do.call('expand_grid', .) %>%
-        mutate(id = seq_len(n())) %>%
-        gather(-id, key = 'index', value = 'vars') %>%
-        arrange(id, index) %>%
-        select(-index) %>%
-        chop(vars) %>%
-        select(-id) %>%
-        filter(!map_lgl(vars, is.unsorted))
-    }) %>%
-    mutate(tsid = seq_len(n()) + 1,
-           ts_count = map(vars, ~as.integer(table(.))),
-           vars = map(vars, unique),
-           ns = lengths(vars)) %>%
-    mutate(vd = map2(vars, ts_count, function(v, tsc) {
-      tibble(start = v, n = tsc) %>%
-        { bind_rows(.,
-                    tibble(start = c(1L, .$start + 1), n = 0L))
-        } %>%
-        arrange(start, n) %>%
-        mutate(width = { lead(start) - start } %>% replace(n(), n_var - start[n()]),
-               state = as.integer(cumsum(n > 0) + 1)) %>%
-        filter(width > 0)
-    }))
+    ts_space_long <-
+      tibble(tsid = 1L,
+             n = 0,
+             size = var_dist[1, n_var])
 
-  ts_space_short <- bind_rows(
-    tibble(tsid = 1L, ns = 0),
-    select(ts_space, tsid, ns))
+    chime_space <-
+      tibble(chid = 1L,
+             hsid = 1L,
+             tsid = 1L,
+             ns = 0,
+             alleles = list(c(haps)),
+             p1 = 1) %>%
+      nest(ids = c(hsid, tsid)) %>%
+      select(chid, ids, ns, alleles, p1)
+
+  } else {
+    hap_space <-
+      seq_len(ts_max + 1) %>%
+      map_df(function(nh) {
+        list(seq_len(n_hap)) %>%
+          rep(nh) %>%
+          setNames(., seq_along(.))%>%
+          do.call('expand_grid', .) %>%
+          mutate(id = seq_len(n())) %>%
+          gather(-id, key = 'index', value = 'haps') %>%
+          arrange(id, index) %>%
+          select(-index) %>%
+          mutate(ns = nh - 1) %>%
+          chop(haps) %>%
+          select(-id)
+      }) %>%
+      mutate(hsid = seq_len(n()))
+
+    ts_space_2 <-
+      seq_len(ts_max) %>%
+      map_df(function(ns) {
+        vars <- t(combn(n_var - 1L, ns))
+        var_index <- seq_len(nrow(vars))
+
+        nrc <-  2 * (ns + 1)
+        ranges <- matrix(0L, nrow = nrow(vars), ncol = nrc)
+        ranges[, 1] <- 1L
+        ranges[,  nrc] <- n_var
+        ranges[, 2 * seq_len(ns)] <- vars
+        ranges[, 2 * seq_len(ns) + 1] <- vars + 1L
+        non_zero_at <- seq.int(2, nrc-1, 2)
+        zero_at <- seq.int(1, nrc-1, 2)
+
+        spans <- ranges[, 1 + seq_len(nrc - 1)] - ranges[, seq_len(nrc - 1)]
+        state_spans <- matrix(0L, nrow = nrow(vars), ncol = ns + 1)
+        state_spans[, seq_len(ns)] <- spans[, non_zero_at] + spans[, zero_at[-(ns+1)]]
+        state_spans[, ns + 1] <- spans[, last(zero_at)]
+
+        widths <-
+          var_dist[inv_arr_ind(ranges[, seq_len(nrc - 1)],
+                               ranges[, 1 + seq_len(nrc - 1)],
+                               nrow(var_dist))] %>%
+          matrix(ncol = nrc - 1)
+
+        tibble(ns = ns,
+               vars = map(var_index, ~ vars[., ]),
+               width_non_zero = map(var_index, ~ widths[., non_zero_at]),
+               width_zero = map(var_index, ~ { widths[., zero_at] %>% keep( ~ . > 0) }),
+               state_span = map(var_index, ~ state_spans[., ]))
+
+      }) %>%
+      mutate(tsid = seq_len(n()) + 1L) %>%
+      select(tsid, ns, everything())
+
+    ts_space <-
+      seq_len(ts_max) %>%
+      map_df(function(ne) {
+        list(seq_len(n_var-1)) %>%
+          rep(ne) %>%
+          setNames(., seq_along(.)) %>%
+          do.call('expand_grid', .) %>%
+          mutate(id = seq_len(n())) %>%
+          gather(-id, key = 'index', value = 'vars') %>%
+          arrange(id, index) %>%
+          select(-index) %>%
+          chop(vars) %>%
+          select(-id) %>%
+          filter(!map_lgl(vars, is.unsorted))
+      }) %>%
+      mutate(tsid = seq_len(n()) + 1L,
+             ts_count = map(vars, ~as.integer(table(.))),
+             vars = map(vars, unique),
+             ns = lengths(vars)) %>%
+      mutate(vd = map2(vars, ts_count, function(v, tsc) {
+        tibble(start = v, n = tsc) %>%
+          { bind_rows(.,
+                      tibble(start = c(1L, .$start + 1), n = 0L))
+          } %>%
+          arrange(start, n) %>%
+          mutate(width = { lead(start) - start } %>% replace(n(), n_var - start[n()]),
+                 state = as.integer(cumsum(n > 0) + 1)) %>%
+          filter(width > 0)
+      }))
+
+    ts_space_short <- bind_rows(
+      tibble(tsid = 1L, ns = 0),
+      select(ts_space, tsid, ns))
 
 
-  ts_space_long <-
-    select(ts_space, tsid, vd) %>%
-    unnest(vd) %>%
-    mutate(end = start + width,
-           size = var_dist[inv_arr_ind(start, end, n_var)])
+    ts_space_long <-
+      select(ts_space, tsid, vd) %>%
+      unnest(vd) %>%
+      mutate(end = start + width,
+             size = var_dist[inv_arr_ind(start, end, n_var)])
 
-  ts_state <-
-    ts_space_long %>%
-    group_by(tsid) %>%
-    summarise(state = list(c(1L, rep(state, width)))) %>%
-    with(do.call(rbind, state)) %>%
-    { rbind(1L, .) }
+    ts_state <-
+      ts_space_long %>%
+      group_by(tsid) %>%
+      summarise(state = list(c(1L, rep(state, width)))) %>%
+      with(do.call(rbind, state)) %>%
+      { rbind(1L, .) }
 
-  ts_space_long <-
-    bind_rows(tibble(tsid = 1L, n = 0, size = var_dist[1, n_var]),
-              select(ts_space_long, tsid, n, size))
+    ts_space_long <-
+      bind_rows(tibble(tsid = 1L, n = 0, size = var_dist[1, n_var]),
+                select(ts_space_long, tsid, n, size))
 
-  chime_space <-
-    full_join(hap_space, ts_space_short, 'ns') %>%
-    mutate(hap_hash = map2_chr(haps, tsid, function(h, i) digest(h[ts_state[i,]]))) %>%
-    group_by(hap_hash) %>%
-    (function(x) {
-      full_join(
-        select(x, -haps) %>% nest(ids = c(hsid, tsid)) %>% ungroup(),
-        slice(x, 1) %>% mutate(hap_state = map2(haps, tsid, function(h, i) h[ts_state[i,]])) %>%
-          ungroup() %>% select(hap_hash, hap_state),
-        by = 'hap_hash')
-    }) %>%
-    mutate(chid = seq_len(n())) %>%
-    mutate(alleles = map(hap_state, function(hs) {
-      haps[inv_arr_ind(seq_along(hs), hs, length(hs))]
-    }))
+    chime_space <-
+      full_join(hap_space, ts_space_short, 'ns') %>%
+      mutate(hap_hash = map2_chr(haps, tsid, function(h, i) digest(h[ts_state[i,]]))) %>%
+      group_by(hap_hash) %>%
+      (function(x) {
+        full_join(
+          select(x, -haps) %>% nest(ids = c(hsid, tsid)) %>% ungroup(),
+          slice(x, 1) %>% mutate(hap_state = map2(haps, tsid, function(h, i) h[ts_state[i,]])) %>%
+            ungroup() %>% select(hap_hash, hap_state),
+          by = 'hap_hash')
+      }) %>%
+      mutate(chid = seq_len(n())) %>%
+      mutate(alleles = map(hap_state, function(hs) {
+        haps[inv_arr_ind(seq_along(hs), hs, length(hs))]
+      }))
 
-  for (h in seq_len(n_hap)) {
-    v <- str_c('p', h)
-    chime_space <- mutate(chime_space, !!v := map_int(hap_state, ~ sum(. == h)) / n_var)
+    for (h in seq_len(n_hap)) {
+      v <- str_c('p', h)
+      chime_space <- mutate(chime_space, !!v := map_int(hap_state, ~ sum(. == h)) / n_var)
+    }
+
+    chime_space <- select(chime_space, chid, ids, ns, alleles, starts_with('p'))
   }
-
-  chime_space <- select(chime_space, chid, ids, ns, alleles, starts_with('p'))
 
   return(list(hap_space = hap_space,
               ts_space = ts_space_long,
@@ -295,23 +354,28 @@ derep_allele_set <- function(allele_mat, id = 'id') {
     select(!! id, rep, n, indices = index)
 }
 
+
 #' @importFrom rlang is_bool is_integer is_scalar_double
+#' @importFrom dplyr first last mutate
 hap_mix_em <- function(read_allele_mat,
                        var_pos,
                        haps,
                        hap_prop,
                        ts_rate,
+                       ts_max = 3,
                        error_rate,
+                       max_error_rate = 0.5,
+                       flat_error_rate = FALSE,
                        max_iter = 50,
                        fixed_hap_prop = FALSE,
-                       flat_error_rate = FALSE,
                        epsilon = 1e-3) {
+  require(tidyverse)
 
   stopifnot(is.matrix(read_allele_mat),
             is_integer(read_allele_mat),
             is_integer(var_pos),
             length(var_pos) == nrow(read_allele_mat),
-            is.matrix(haps) && ncol(haps) > 1L,
+            is.matrix(haps) && ncol(haps) >= 1L,
             nrow(haps) == nrow(read_allele_mat),
             is_double(hap_prop),
             length(hap_prop) == ncol(haps),
@@ -326,26 +390,30 @@ hap_mix_em <- function(read_allele_mat,
             epsilon > 0)
 
   hap_prop <- hap_prop / sum(hap_prop)
-
+  n_hap <- ncol(haps)
+  if (n_hap == 1) {
+    # chimera's are irrelevant for single haplotype
+    ts_rate <- 0
+  }
   n_var <- length(var_pos)
   n_read <- ncol(read_allele_mat)
   var_width <- last(var_pos) - first(var_pos)
+
   if (! flat_error_rate) {
     error_rate <- rep(error_rate, n_var)
   }
   # note that this is the most time consuming step
-  chims <- enum_chimeras(haps, var_pos = var_pos, ts_max = 3)
+  chims <- enum_chimeras(haps, var_pos = var_pos, ts_max = ts_max)
   n_chim <- nrow(chims$chime_space)
   chim_alleles <- chims$chime_space$alleles %>% do.call('cbind', .)
 
-  read_chim_dist <- read_chimera_dist(read_allele_mat,
-                                      chim_alleles)
+  read_chim_dist <- read_chimera_dist(read_allele_mat, chim_alleles)
   read_chim_ident <- n_var - read_chim_dist
   read_chim_match <- read_chimera_match(read_allele_mat, chim_alleles)
 
   n_iter <- 0L
   LH <- -Inf
-  res <- tibble(iter = integer(),
+  search <- tibble(iter = integer(),
                 LH = double(),
                 ts_rate = double(),
                 error_rate = list(),
@@ -379,7 +447,8 @@ hap_mix_em <- function(read_allele_mat,
     read_chim_lh_norm <-
       read_chim_lh %>%
       exp() %>%
-      apply(2, function(x) x / sum(x))
+      apply(2, function(x) x / sum(x)) %>%
+      matrix(ncol = ncol(read_chim_lh))
 
     # lh
     read_chim_lh_norm_rs <- rowSums(read_chim_lh_norm)
@@ -393,12 +462,17 @@ hap_mix_em <- function(read_allele_mat,
       log() %>% sum()
 
     # record results
-    res <- add_row(res,
-                   iter = n_iter,
-                   LH = LH,
-                   ts_rate = ts_rate,
-                   error_rate = list(error_rate),
-                   hap_prop = list(hap_prop))
+    search <- add_row(search,
+                      iter = n_iter,
+                      LH = LH,
+                      ts_rate = ts_rate,
+                      error_rate = list(error_rate),
+                      hap_prop = list(hap_prop))
+
+    ## need to calculate probailities under the model of
+    # each haplotype or chimera
+    # this can be pulled from chim_lh straigthforwardly
+    # should include column here for is chimera
 
     if (epsilon > LH - LH_last) {
       break
@@ -411,10 +485,12 @@ hap_mix_em <- function(read_allele_mat,
         map_dbl(~ weighted.mean(., read_chim_lh_norm_rs))
     }
 
-    ts_rate <- weighted.mean(chims$chime_space$ns, read_chim_lh_norm_rs) / var_width
+    if (n_hap > 1) {
+      ts_rate <- weighted.mean(chims$chime_space$ns, read_chim_lh_norm_rs) / var_width
+    }
 
     if (flat_error_rate) {
-       error_rate <- weighted.mean(read_chim_dist, read_chim_lh_norm) / n_var
+      error_rate <- weighted.mean(read_chim_dist, read_chim_lh_norm) / n_var
     } else {
       error_rate <- map_dbl(seq_len(n_var), function(i) {
         read_chimera_match_sub(match_list = read_chim_match[[i]],
@@ -425,22 +501,210 @@ hap_mix_em <- function(read_allele_mat,
           weighted.mean(read_chim_lh_norm)
       })
     }
+    error_rate <- pmin(max_error_rate, error_rate)
   }
 
-  return(res)
+  read_hap_lh <-
+    tibble(read_id = seq_len(n_read)) %>%
+    bind_cols(
+      select(chims$chime_space, starts_with('p')) %>%
+        mutate(pchimera = if_else(rowSums(. > 0 & . < 1) > 0, 1, 0)) %>%
+        map2_dfc(str_remove(names(.), 'p'), ., function(n, p) {
+          tibble(!!str_c('raw_llh_', n) := log(colSums(exp(read_chim_lh[which(p == 1), , drop = FALSE]))),
+                 !!str_c('rel_lh_', n) := colSums(read_chim_lh_norm[which(p == 1), , drop = FALSE]))
+        })
+    ) %>%
+    pivot_longer(-read_id,
+                 names_to = c('.value', "haplotype"),
+                 names_pattern = '(.+)_([^_]+)')
+
+  read_hap_lh_smry <-
+    read_hap_lh %>%
+    arrange(read_id, desc(rel_lh)) %>%
+    group_by(read_id) %>%
+    slice(1) %>%
+    ungroup()
+
+  return(list(search = search,
+              read_hap_lh = read_hap_lh,
+              read_hap_lh_smry = read_hap_lh_smry))
 }
 
-#' @importFrom rlang is_integerish
-#' @importFrom magrittr '%<>%'
-a_mult_d3 <- function(a, x) {
-  stopifnot(is.array(a),
-            is.vector(x),
-            length(dim(a)) >= 3,
-            dim(a)[3] == length(x))
-  for (i in seq_along(x)) {
-    a[ , , i] %<>% { . * x[i] }
+
+enum_hap_ratios <- function(ploidy, n_haps) {
+
+  if (n_haps == 1) {
+    tibble(ratio = list(1L))
+  } else {
+    rep(list(seq_len(n_haps)), ploidy) %>%
+      setNames(seq_len(ploidy)) %>%
+      do.call(expand_grid, .) %>%
+      mutate(id = seq_len(n())) %>%
+      pivot_longer(-id, names_to = 'copy', values_to = 'hap') %>%
+      group_by(id, hap) %>%
+      summarise(hap_count = n()) %>%
+      group_by(id) %>%
+      filter(n_distinct(hap) == n_haps) %>%
+      mutate(ratio = `if`(n() == 1, 1L, hap_count / reduce(hap_count, pracma::gcd))) %>%
+      ungroup() %>%
+      select(id,hap, ratio) %>%
+      pivot_wider(names_from = hap, values_from = ratio) %>%
+      select(-id) %>%
+      distinct() %>%
+      mutate(id = seq_len(n())) %>%
+      pivot_longer(-id, names_to = 'hap', values_to = 'ratio') %>%
+      mutate(hap = as.integer(hap), ratio = as.integer(ratio)) %>%
+      chop(c(hap, ratio)) %>%
+      transmute(ratio = map2(ratio, hap, ~.x[.y]))
   }
-  return(a)
+}
+
+
+chimclustr <- function(read_allele_mat,
+                       var_pos,
+                       max_ploidy = 4L) {
+  #
+  read_allele_df <-
+    t(unname(read_allele_mat)) %>%
+    as.data.frame() %>%
+    rownames_to_column() %>%
+    mutate_all(as.factor) %>%
+    as.data.frame() %>%
+    column_to_rownames()
+
+  read_dissim <- cluster::daisy(read_allele_df, metric = 'gower')
+  read_dissim_mat <- as.matrix(read_dissim)
+  ro <- hclust(read_dissim)$order
+
+  t_read_allele_df <-
+    unname(read_allele_mat) %>%
+    as.data.frame() %>%
+    rownames_to_column() %>%
+    mutate_all(as.factor) %>%
+    as.data.frame() %>%
+    column_to_rownames()
+
+  var_dissim <- cluster::daisy(t_read_allele_df, metric = 'gower')
+  vo <- hclust(var_dissim)$order
+
+  pam_meds <-
+    seq_len(max_ploidy) %>%
+    map_df(function(k) {
+      tibble(k = k,
+             medoid = as.integer(cluster::pam(read_dissim, k = k)$medoids))
+    }) %>%
+    mutate(medoid = map_int(medoid, ~ min(which(read_dissim_mat[., ] == 0))))
+
+  var_set <-
+    read_allele_mat[, unique(pam_meds$medoid)] %>%
+    apply(1, function(x) n_distinct(x) > 1) %>%
+    which()
+
+  model_search <-
+    pam_meds %>%
+    chop(medoid) %>%
+    mutate(ratios = map(k, ~ enum_hap_ratios(max_ploidy, .))) %>%
+    unnest(ratios) %>%
+    # head(7) %>%
+    mutate(em_res = furrr::future_pmap(., function(medoid, ratio, ...) {
+      chimclustr:::hap_mix_em(read_allele_mat = read_allele_mat[var_set, , drop = FALSE],
+                             var_pos = var_pos[var_set],
+                             haps = read_allele_mat[var_set, medoid, drop = FALSE],
+                             hap_prop = ratio / sum(ratio),
+                             ts_rate = 1e-4,
+                             ts_max = 2,
+                             error_rate = 1e-1,
+                             max_iter = 20,
+                             epsilon = 0.1,
+                             fixed_hap_prop = TRUE,
+                             flat_error_rate = FALSE)
+    })) %>%
+    mutate(LH = map_dbl(em_res, ~ last(.$search$LH))) %>%
+    saveRDS('model_search.rds')
+
+  model_search <- read_rds('model_search.rds')
+
+  read_sample <- sample(ro, 500) %>% as.character()
+
+  read_heatmap <-
+    read_dissim_mat %>%
+    as.data.frame() %>%
+    rownames_to_column('row_id') %>%
+    as_tibble() %>%
+    gather(-row_id, key = 'col_id', value = 'sim') %>%
+    mutate(sim = 1 - sim) %>%
+    filter(row_id %in% read_sample, col_id %in% read_sample) %>%
+    mutate(col_id = factor(col_id, levels = as.character(ro)),
+           row_id = factor(row_id, levels = as.character(rev(ro)))) %>%
+    ggplot() +
+    geom_tile(aes(row_id, col_id, fill = sim)) +
+    scale_fill_viridis_c(option = 'E') +
+    theme(axis.text.x = element_blank(), axis.text.y = element_blank(),
+          axis.ticks.x = element_blank(), legend.position = 'top') +
+    ylab('read') +
+    xlab('read')
+  # read_heatmap
+
+  ra_plot <-
+    read_allele_df %>%
+    { set_colnames(., 1:ncol(.)) } %>%
+    as_tibble() %>%
+    mutate_all(as.integer) %>%
+    mutate(read_id = as.character(seq_len(n()))) %>%
+    filter(read_id %in% read_sample) %>%
+    gather(-read_id, key = 'var_id', value = 'allele') %>%
+    mutate(read_id = factor(read_id, levels = as.character(ro)),
+           var_id = factor(var_id, levels = as.character(rev(vo)))) %>%
+    mutate(allele = as.character(allele)) %>%
+    ggplot() +
+    geom_tile(aes(var_id, read_id, fill = allele)) +
+    theme(axis.text.x = element_blank(), axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(), axis.title.y = element_blank()) +
+    guides(fill = F) +
+    xlab('variant') +
+    scale_fill_manual(values =  c(`1` = "#FFEA46FF", `2`= "#00204DFF"))
+
+  for( i in (seq_along(model_search$em_res))) {
+    hap_plot <-
+      model_search$em_res[[i]]$read_hap_lh_smry %>%
+      mutate(read_id = as.character(read_id)) %>%
+      filter(read_id %in% read_sample) %>%
+      mutate(read_id = factor(read_id, ro)) %>%
+      ggplot() +
+      geom_tile(aes(x=1, y=read_id, fill = haplotype)) +
+      theme(axis.text.x = element_blank(), axis.text.y = element_blank(),
+            axis.title.y = element_blank(), legend.position = 'top',
+            axis.ticks.x = element_blank()) +
+      scale_fill_brewer(palette = 'Dark2') +
+      xlab('haplotype')
+
+    hap_lh_plot <-
+      model_search$em_res[[i]]$read_hap_lh %>%
+      mutate(read_id = as.character(read_id)) %>%
+      filter(read_id %in% read_sample) %>%
+      mutate(read_id = factor(read_id, ro)) %>%
+      ggplot() +
+      geom_tile(aes(x=haplotype, y=read_id, fill = raw_llh)) +
+      theme(axis.text.y = element_blank(),
+            axis.title.y = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.text.x = element_text(angle = 90)) +
+      scale_fill_viridis_c() +
+      guides(fill = guide_colorbar(title = 'log likelihood')) +
+      ylab('read') +
+      xlab('haplotype')
+
+
+    plot_grid(read_heatmap, ra_plot, hap_plot, hap_lh_plot,
+              rel_widths = c(15, 5, 3, 6),
+              nrow = 1, align = 'h', axis = 'tblr')
+
+    ggsave(str_c(i, '.png'), width = 11, height = 8)
+  }
+
+
+
+
 }
 
 run_test <- function() {
@@ -454,6 +718,13 @@ run_test <- function() {
   # output should be read_id + ML state ? (e.g. cluster_1:0.95, cluster_2:0.05, error: 0.25)
   #     or fuzzy state - e.g. p(cluster_1), p(cluster_2), p(chimera)
   #     or simply cluster_id + cluster_dist
+
+  # might neeed to include a "noise" haplotype
+  # where allele probabilities is estimated from obs alleles???
+
+  # could use ‘poisbinom’ to calculate likelhood of x errors - useful for filtering ???
+  # is in necessary to filter at all, or just assign reads?
+
 
   data <- test_data()
   read_allele_mat <- test_matrix(data)
@@ -485,64 +756,31 @@ run_test <- function() {
 
   var_pos <- data$pos[vars_diff]
 
-  # em_res_1 <- hap_mix_em(read_allele_mat = read_allele_mat,
-  #                        var_pos = var_pos,
-  #                        haps = haps,
-  #                        hap_prop = c(0.5, 0.5),
-  #                        ts_rate = 1e-4,
-  #                        error_rate = 1e-1,
-  #                        max_iter = 50,
-  #                        fixed_hap_prop = FALSE,
-  #                        flat_error_rate = FALSE)
-  #
-  # em_res_1f <- hap_mix_em(read_allele_mat = read_allele_mat,
-  #                         var_pos = var_pos,
-  #                         haps = haps,
-  #                         hap_prop = c(0.5, 0.5),
-  #                         ts_rate = 1e-4,
-  #                         error_rate = 1e-1,
-  #                         max_iter = 50,
-  #                         fixed_hap_prop = TRUE,
-  #                         flat_error_rate = TRUE)
 
-  em_res_1v <- hap_mix_em(read_allele_mat = read_allele_mat,
+  em_res_1 <- hap_mix_em(read_allele_mat = read_allele_mat,
                          var_pos = var_pos,
                          haps = haps,
                          hap_prop = c(0.5, 0.5),
                          ts_rate = 1e-4,
                          error_rate = 1e-1,
-                         max_iter = 50,
-                         fixed_hap_prop = FALSE,
+                         max_iter = 10,
+                         epsilon = 1e-1,
+                         fixed_hap_prop = TRUE,
                          flat_error_rate = FALSE)
 
-  em_res_1fv <- hap_mix_em(read_allele_mat = read_allele_mat,
-                           var_pos = var_pos,
-                           haps = haps,
-                           hap_prop = c(0.5, 0.5),
-                           ts_rate = 1e-4,
-                           error_rate = 1e-1,
-                           max_iter = 50,
-                           fixed_hap_prop = TRUE,
-                           flat_error_rate = FALSE)
+  disim_1 <- cluster::daisy(read_allele_tbl[em_res_1$read_hap_lh_smry$haplotype == '1', ],
+                            metric = 'gower')
 
-  em_res_1fv_21 <- hap_mix_em(read_allele_mat = read_allele_mat,
-                              var_pos = var_pos,
-                              haps = haps,
-                              hap_prop = c(0.67, 0.33),
-                              ts_rate = 1e-4,
-                              error_rate = 1e-1,
-                              max_iter = 50,
-                              fixed_hap_prop = TRUE,
-                              flat_error_rate = FALSE)
+  em_res_mono <- hap_mix_em(read_allele_mat = read_allele_mat,
+                            var_pos = var_pos,
+                            haps = haps[, 1, drop = FALSE],
+                            hap_prop = 1,
+                            ts_rate = 1e-4,
+                            error_rate = 1e-1,
+                            max_iter = 10,
+                            epsilon = 1e-1,
+                            fixed_hap_prop = TRUE,
+                            flat_error_rate = FALSE)
 
-  em_res_1fv_12 <- hap_mix_em(read_allele_mat = read_allele_mat,
-                              var_pos = var_pos,
-                              haps = haps,
-                              hap_prop = c(0.33, 0.67),
-                              ts_rate = 1e-4,
-                              error_rate = 1e-1,
-                              max_iter = 50,
-                              fixed_hap_prop = TRUE,
-                              flat_error_rate = FALSE)
 
 }
