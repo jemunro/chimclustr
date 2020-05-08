@@ -4,6 +4,9 @@
 
 require(tidyverse)
 require(magrittr)
+require(furrr)
+options(future.fork.enable = TRUE)
+options(future.globals.maxSize=Inf)
 
 log_add <- function (x, y) {
   .max <- pmax(x, y)
