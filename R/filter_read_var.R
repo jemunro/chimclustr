@@ -3,9 +3,7 @@
 filter_read_var <- function(read_allele_mat,
                             max_na_read = 0.25,
                             max_na_var = 0.25,
-                            max_maj_af = 0.95,
-                            min_p_neighbour = 0.005,
-                            max_neighbour_dist = 0.25) {
+                            max_maj_af = 0.90) {
 
   v_set <- seq_len(nrow(read_allele_mat))
   r_set <- seq_len(ncol(read_allele_mat))
@@ -13,8 +11,7 @@ filter_read_var <- function(read_allele_mat,
   while(TRUE) {
     v_mask_1 <-
       filt_vars(read_allele_mat = read_allele_mat[v_set, r_set],
-                max_na_var = max_na_var,
-                max_maj_af = max_maj_af) %>%
+                max_na_var = max_na_var) %>%
       filter(fail) %>%
       pull(vid) %>%
       { setdiff(seq_along(v_set), .) }
@@ -28,8 +25,7 @@ filter_read_var <- function(read_allele_mat,
 
     v_mask_2 <-
       filt_vars(read_allele_mat = read_allele_mat[v_set, r_set[r_mask_1]],
-                max_na_var = max_na_var,
-                max_maj_af = max_maj_af) %>%
+                max_na_var = max_na_var) %>%
       filter(fail) %>%
       pull(vid) %>%
       { setdiff(seq_along(v_set), .) }
@@ -57,8 +53,7 @@ filter_read_var <- function(read_allele_mat,
 }
 
 filt_vars <- function(read_allele_mat,
-                      max_na_var,
-                      max_maj_af) {
+                      max_na_var) {
   set_colnames(read_allele_mat, str_c('r_', seq_len(ncol(read_allele_mat)))) %>%
     as_tibble() %>%
     mutate(vid = seq_len(nrow(read_allele_mat))) %>%
@@ -68,9 +63,24 @@ filt_vars <- function(read_allele_mat,
                  names_ptypes = list(rid = integer()),
                  values_to = 'allele') %>%
     group_by(vid) %>%
-    summarise(naf = sum(is.na(allele)) / n(),
-              mj_af = mjaf(allele)) %>%
-    mutate(fail = naf > max_na_var | mj_af > max_maj_af)
+    summarise(naf = sum(is.na(allele)) / n()) %>%
+    mutate(fail = naf > max_na_var)
+}
+
+filt_vars_maj_af <- function(read_allele_mat,
+                             max_maj_af) {
+  set_colnames(read_allele_mat, str_c('r_', seq_len(ncol(read_allele_mat)))) %>%
+    as_tibble() %>%
+    mutate(vid = seq_len(nrow(read_allele_mat))) %>%
+    pivot_longer(-vid,
+                 names_prefix = 'r_',
+                 names_to = 'rid',
+                 names_ptypes = list(rid = integer()),
+                 values_to = 'allele') %>%
+    group_by(vid) %>%
+    summarise(mj_af = mjaf(allele)) %>%
+    filter(mj_af <= max_maj_af) %>%
+    pull(vid)
 }
 
 mjaf <- function(x) {
