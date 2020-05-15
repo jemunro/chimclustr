@@ -1,9 +1,9 @@
 
 
 filter_read_var <- function(read_allele_mat,
-                            max_na_read = 0.25,
-                            max_na_var = 0.25,
-                            max_maj_af = 0.90) {
+                            max_na_read = 0.10,
+                            max_na_var = 0.10,
+                            agressive = TRUE) {
 
   v_set <- seq_len(nrow(read_allele_mat))
   r_set <- seq_len(ncol(read_allele_mat))
@@ -48,8 +48,27 @@ filter_read_var <- function(read_allele_mat,
     v_set <- v_set[v_mask]
   }
 
-  return(list(var_set = v_set,
-              read_set = r_set))
+  # final filter to make sure both read and var error rates are satisfied
+  if (agressive) {
+    v_mask <-
+      filt_vars(read_allele_mat = read_allele_mat[v_set, r_set],
+                max_na_var = max_na_var) %>%
+      filter(fail) %>%
+      pull(vid) %>%
+      { setdiff(seq_along(v_set), .) }
+
+    r_mask <-
+      filt_reads(read_allele_mat = read_allele_mat[v_set, r_set],
+                 max_na_read = max_na_read) %>%
+      filter(fail) %>%
+      pull(rid) %>%
+      { setdiff(seq_along(r_set), .) }
+
+    r_set <- r_set[r_mask]
+    v_set <- v_set[v_mask]
+  }
+
+  return(list(var_set = v_set, read_set = r_set))
 }
 
 filt_vars <- function(read_allele_mat,
