@@ -258,14 +258,19 @@ hap_mix_em2 <- function(read_allele_mat,
               read_hap_lh_smry = read_hap_lh_smry))
 }
 
-miss_em <- function(x, max_iter = 100L, epsilon = 1e-6) {
-  # note that this missing rate is independant of other rates
-  # therefore it can be estimated separately
-  # can also be used for independant row/col filtering
+marginal_rate_em <- function(x, max_iter = 100L, epsilon = 1e-3) {
 
-  stopifnot(is.matrix(x), length(x) > 1)
+  # EM-framework
+  # observed variables: sites true
+  # latent variables: reason true (v/s/vs)
+  # params: row-wise and col-wise rates
 
-  if (!any(is.na(x))) {
+  stopifnot(is.matrix(x),
+            is.logical(x),
+            all(!is.na(x)),
+            length(x) > 1)
+
+  if (!any(x)) {
     # easy case
     return(list(row_rate = rep(0, nrow(x)),
                 col_rate = rep(0, ncol(x)),
@@ -273,15 +278,18 @@ miss_em <- function(x, max_iter = 100L, epsilon = 1e-6) {
                 converged = NA,
                 LH = 0))
   }
-
+  x <- unname(x)
   n_row <- nrow(x)
   n_col <- ncol(x)
-  is_na_x <- is.na(c(x))
-  row_col_missing <- map(seq_len(n_row), function(i) which(is.na(x[i, ])))
-  col_row_missing <- map(seq_len(n_col), function(j) which(is.na(x[, j])))
-  row_rate <- lengths(row_col_missing) / n_col
-  col_rate <- lengths(col_row_missing) / n_row
+  global_rate <- sum(x) / length(x)
+  # correction for over estimation of missingness when marginalising
+  adj <- (1-sqrt(1-global_rate)) / global_rate
+  row_col_which <- map(seq_len(n_row), function(i) which(x[i, ]))
+  col_row_which <- map(seq_len(n_col), function(j) which(x[, j]))
+  row_rate <- adj*(lengths(row_col_which) / n_col)
+  col_rate <- adj*(lengths(col_row_which) / n_row)
   iter <- 0L
+  LH_last <- -Inf
 
   search <- tibble(iter = integer(),
                    LH = numeric(),
@@ -292,13 +300,11 @@ miss_em <- function(x, max_iter = 100L, epsilon = 1e-6) {
     iter <- iter + 1
 
     ## expectation
-    miss_lh <-
+    x_lh <-
       matrix(row_rate, nrow = n_row, ncol = n_col) %>%
       { sweep(., 2, col_rate, `+`, check.margin = FALSE) - sweep(., 2, col_rate, `*`, check.margin = FALSE) }
 
-    non_miss_lh <- 1 - miss_lh
-
-    LH <- sum(log(c(miss_lh[is_na_x], (1 - miss_lh)[!is_na_x])))
+    LH <- sum(log(c(x_lh[x], (1 - x_lh)[!x])))
 
     search <- add_row(search,
                       iter = iter,
@@ -306,21 +312,28 @@ miss_em <- function(x, max_iter = 100L, epsilon = 1e-6) {
                       row_rate = list(row_rate),
                       col_rate = list(col_rate))
 
-    row_post <- sweep(1/miss_lh, 1, row_rate, `*`)
-    col_post <- sweep(1/miss_lh, 2, col_rate, `*`)
+    if (epsilon > (LH - LH_last)) {
+      break
+    }
+
+    LH_last <- LH
 
     ## maximisation
+    row_post <- sweep(1/x_lh, 1, row_rate, `*`)
+    col_post <- sweep(1/x_lh, 2, col_rate, `*`)
+
     row_rate <-
       map_dbl(seq_len(n_row), function(i) {
-        mean(replace(numeric(n_col), row_col_missing[[i]], row_post[i, row_col_missing[[i]]]))
+        mean(replace(numeric(n_col), row_col_which[[i]], row_post[i, row_col_which[[i]]]))
       })
 
     col_rate <-
       map_dbl(seq_len(n_col), function(j) {
-        mean(replace(numeric(n_row), col_row_missing[[j]], col_post[col_row_missing[[j]], j]))
+        mean(replace(numeric(n_row), col_row_which[[j]], col_post[col_row_which[[j]], j]))
       })
   }
 
+  return(list(row_rate = row_rate, col_rate = col_rate, search = search))
 }
 
 estimate_marginal_rates <- function(read_allele_mat) {
