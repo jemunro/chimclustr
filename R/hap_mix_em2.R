@@ -2,7 +2,7 @@
 #' @importFrom rlang is_bool is_integer is_scalar_double
 #' @importFrom dplyr first last mutate
 #' @importFrom abind abind
-hap_mix_em2 <- function(read_allele_mat,
+hap_mix_em2 <- function(allele_mat,
                         var_pos,
                         haps,
                         hap_prop,
@@ -18,36 +18,36 @@ hap_mix_em2 <- function(read_allele_mat,
 
   # bring back read_count to speed up search
 
-  stopifnot(is.matrix(read_allele_mat),
-            is_integer(read_allele_mat),
+  stopifnot(is.matrix(allele_mat),
+            is_integer(allele_mat),
             is_integer(var_pos),
-            length(var_pos) == nrow(read_allele_mat),
+            length(var_pos) == nrow(allele_mat),
             is.matrix(haps) && ncol(haps) >= 1L,
             !any(is.na(haps)),
-            nrow(haps) == nrow(read_allele_mat),
+            nrow(haps) == nrow(allele_mat),
             is_double(hap_prop),
             length(hap_prop) == ncol(haps),
             all(hap_prop > 0),
             is_scalar_double(ts_rate),
             ts_rate > 0 && ts_rate < 1,
             is_double(var_error_rate),
-            length(var_error_rate) == 1 | length(var_error_rate) == nrow(read_allele_mat),
+            length(var_error_rate) == 1 | length(var_error_rate) == nrow(allele_mat),
             all(var_error_rate >= 0 && var_error_rate <= 1),
             is_double(var_miss_rate),
-            length(var_miss_rate) == 1 | length(var_miss_rate) == nrow(read_allele_mat),
+            length(var_miss_rate) == 1 | length(var_miss_rate) == nrow(allele_mat),
             all(var_miss_rate >= 0 && var_miss_rate <= 1),
             is_double(var_miss_rate),
-            length(read_error_rate) == 1 | length(read_error_rate) == ncol(read_allele_mat),
+            length(read_error_rate) == 1 | length(read_error_rate) == ncol(allele_mat),
             all(read_error_rate >= 0 && read_error_rate <= 1),
             is_double(read_miss_rate),
-            length(read_miss_rate) == 1 | length(read_miss_rate) == ncol(read_allele_mat),
+            length(read_miss_rate) == 1 | length(read_miss_rate) == ncol(allele_mat),
             all(read_miss_rate >= 0 && read_miss_rate <= 1),
             is_bool(fixed_hap_prop),
             is_scalar_double(epsilon),
             epsilon > 0,
-            is.null(read_weight) || length(read_weight) == ncol(read_allele_mat))
+            is.null(read_weight) || length(read_weight) == ncol(allele_mat))
 
-  read_allele_mat <- unname(read_allele_mat)
+  allele_mat <- unname(allele_mat)
 
   hap_prop <- hap_prop / sum(hap_prop)
   n_hap <- ncol(haps)
@@ -57,7 +57,7 @@ hap_mix_em2 <- function(read_allele_mat,
     ts_max <- 0
   }
   n_var <- length(var_pos)
-  n_read <- ncol(read_allele_mat)
+  n_read <- ncol(allele_mat)
   var_width <- last(var_pos) - first(var_pos)
 
   if (length(var_error_rate) != n_var) {
@@ -87,21 +87,21 @@ hap_mix_em2 <- function(read_allele_mat,
   for (v in seq_len(n_var)) {
     for (r in seq_len(n_read)) {
       chim_read_var_state[, r, v] <-
-        if_else(chim_alleles[v, ] == read_allele_mat[v, r],
+        if_else(chim_alleles[v, ] == allele_mat[v, r],
                 1L, 2L, missing = 3L)
     }
   }
   var_read_missing <- map(seq_len(n_var), function(vi) {
-    list(yes = which(is.na(read_allele_mat[vi, ])),
-         no = which(!is.na(read_allele_mat[vi, ])))
+    list(yes = which(is.na(allele_mat[vi, ])),
+         no = which(!is.na(allele_mat[vi, ])))
   })
   read_var_missing <- map(seq_len(n_read), function(ri) {
-    list(yes = which(is.na(read_allele_mat[, ri])),
-         no = which(!is.na(read_allele_mat[, ri ])))
+    list(yes = which(is.na(allele_mat[, ri])),
+         no = which(!is.na(allele_mat[, ri ])))
   })
-  # read_chim_dist <- read_chimera_dist(read_allele_mat, chim_alleles)
+  # read_chim_dist <- read_chimera_dist(allele_mat, chim_alleles)
   # read_chim_ident <- n_var - read_chim_dist
-  # read_chim_match <- read_chimera_match2(read_allele_mat, chim_alleles)
+  # read_chim_match <- read_chimera_match2(allele_mat, chim_alleles)
 
   n_iter <- 0L
   LH <- -Inf
@@ -336,11 +336,11 @@ marginal_rate_em <- function(x, max_iter = 100L, epsilon = 1e-3) {
   return(list(row_rate = row_rate, col_rate = col_rate, search = search))
 }
 
-estimate_marginal_rates <- function(read_allele_mat) {
+estimate_marginal_rates <- function(allele_mat) {
 
 
   dissim <-
-    t(read_allele_mat) %>%
+    t(allele_mat) %>%
     as.data.frame() %>%
     mutate_all(as.factor) %>%
     cluster::daisy(metric = 'gower')
