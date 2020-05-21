@@ -8,8 +8,6 @@ hap_mix_em2 <- function(allele_mat,
                         hap_prop,
                         ts_rate = 1e-4,
                         ts_max = 2,
-                        var_error_rate = 1e-2,
-                        read_error_rate = 1e-2,
                         max_var_error_rate = 0.5,
                         max_iter = 20,
                         fixed_hap_prop = FALSE,
@@ -30,18 +28,6 @@ hap_mix_em2 <- function(allele_mat,
             all(hap_prop > 0),
             is_scalar_double(ts_rate),
             ts_rate > 0 && ts_rate < 1,
-            is_double(var_error_rate),
-            length(var_error_rate) == 1 | length(var_error_rate) == nrow(allele_mat),
-            all(var_error_rate >= 0 && var_error_rate <= 1),
-            is_double(var_miss_rate),
-            length(var_miss_rate) == 1 | length(var_miss_rate) == nrow(allele_mat),
-            all(var_miss_rate >= 0 && var_miss_rate <= 1),
-            is_double(var_miss_rate),
-            length(read_error_rate) == 1 | length(read_error_rate) == ncol(allele_mat),
-            all(read_error_rate >= 0 && read_error_rate <= 1),
-            is_double(read_miss_rate),
-            length(read_miss_rate) == 1 | length(read_miss_rate) == ncol(allele_mat),
-            all(read_miss_rate >= 0 && read_miss_rate <= 1),
             is_bool(fixed_hap_prop),
             is_scalar_double(epsilon),
             epsilon > 0,
@@ -58,53 +44,45 @@ hap_mix_em2 <- function(allele_mat,
   }
   n_var <- length(var_pos)
   n_read <- ncol(allele_mat)
-  is_chim_var <- map_lgl(seq_len(n_var), ~ ! all(haps[., ] == haps[., 1]))
-  n_chim_var <- sum(is_chim_var)
-  n_fix_var <- n_var - n_chim_var
-  chim_pos <- var_pos[is_chim_var]
-  chim_width <- last(chim_pos) - first(chim_pos)
+  is_fixed_var <- map_lgl(seq_len(n_var), ~ all(haps[., ] == haps[., 1]))
+  which_fixed <- which(is_fixed_var)
+  which_unfixed <- which(!is_fixed_var)
+  n_unfixed_var <- length(which_unfixed)
+  n_fixed_var <- length(which_fixed)
+  unfixed_pos <- var_pos[which_unfixed]
+  unfixed_width <- last(unfixed_pos) - first(unfixed_pos)
+  consensus_alleles <- haps[which_fixed, 1]
+  fixed_alleles <- allele_mat[which_fixed, ]
+  unfixed_alleles <- allele_mat[which_unfixed, ]
   # var_width <- last(var_pos) - first(var_pos)
 
   error_est <- est_err_rates(allele_mat, haps)
   read_error_rate <- error_est$read_error_rate
-  var_error_rate <- error_est$var_error_rate
+  fixed_var_error_rate <- error_est$var_error_rate[which_fixed]
+  unfixed_var_error_rate <- error_est$var_error_rate[which_unfixed]
 
   if (is.null(read_weight)) {
     read_weight <- rep(1, n_read)
   }
   read_weight_sum <- sum(read_weight)
 
-  ## under refactor
-  #'fixed' vars and 'chim' vars to be treated somewhat differently
-  # main difference is when estimating error rates,
-  # and fixed vars need not be considered for estimating chim_lhs
-  # also need to deal with missingness more cleanly???
-  #   -use chim_read_var_state + read_var_state(need to construct a consensus genotype)
-
-  chims <- enum_chimeras(haps, var_pos = chim_pos, ts_max = ts_max)
+  chims <- enum_chimeras(haps[which_unfixed, , drop = FALSE], var_pos = unfixed_pos, ts_max = 2)
   n_chim <- nrow(chims$chime_space)
   chim_alleles <- chims$chime_space$alleles %>% do.call('cbind', .)
 
-  lvls <- c('match', 'mismatch', 'missing')
-  chim_read_var_state <- array(integer(), dim = c(n_chim, n_read, n_var))
-  for (v in seq_len(n_var)) {
-    for (r in seq_len(n_read)) {
-      chim_read_var_state[, r, v] <-
-        if_else(chim_alleles[v, ] == allele_mat[v, r],
-                1L, 2L, missing = 3L)
-    }
-  }
-  var_read_missing <- map(seq_len(n_var), function(vi) {
-    list(yes = which(is.na(allele_mat[vi, ])),
-         no = which(!is.na(allele_mat[vi, ])))
-  })
-  read_var_missing <- map(seq_len(n_read), function(ri) {
-    list(yes = which(is.na(allele_mat[, ri])),
-         no = which(!is.na(allele_mat[, ri ])))
-  })
-  # read_chim_dist <- read_chimera_dist(allele_mat, chim_alleles)
-  # read_chim_ident <- n_var - read_chim_dist
-  # read_chim_match <- read_chimera_match2(allele_mat, chim_alleles)
+  # state coding - 1:'match', 2:'mismatch', 3:'missing'
+  chim_read_var_state <-
+    map(seq_len(n_unfixed_var), function(v) {
+      map(seq_len(n_read), function(r) {
+        if_else(chim_alleles[v, ] == unfixed_alleles[v, r], 1L, 2L, missing = 3L)
+      }) %>% do.call('cbind', .)
+    }) %>% abind::abind(along = 3)
+
+  fixed_read_var_state <-
+    map(seq_len(n_fixed_var), function(v) {
+      if_else(consensus_alleles[v] == fixed_alleles[v, ], 1L, 2L, missing = 3L)
+    }) %>%
+    do.call('rbind', .)
 
   n_iter <- 0L
   LH <- -Inf
@@ -122,27 +100,28 @@ hap_mix_em2 <- function(allele_mat,
     n_iter <- n_iter + 1L
 
     ##### Expecation #####
-    chim_lh <- chimera_lh(chims, hap_prop, ts_rate, var_width = chim_width)
+    chim_lh <- chimera_lh(chims, hap_prop, ts_rate, var_width = unfixed_width)
 
-    # LH of missing/mismatch/match at all read vars
-    missing_0 <- # p(A or B) = p(A) + p(B) - p(A) * p(B)
-      matrix(var_miss_rate, nrow = n_var, ncol = n_read) %>%
-      (function(x) sweep(x, 2, read_miss_rate, `+`, check.margin = FALSE) -
-         sweep(x, 2, read_miss_rate, `*`, check.margin = FALSE))
-
-    mismatch_0 <-
-      matrix(var_error_rate, nrow = n_var, ncol = n_read) %>%
+    fixed_mismatch_e <-
+      matrix(fixed_var_error_rate, nrow = n_fixed_var, ncol = n_read) %>%
       (function(x) sweep(x, 2, read_error_rate, `+`, check.margin = FALSE) -
          sweep(x, 2, read_error_rate, `*`, check.margin = FALSE))
 
-    missing <- log(missing_0)
-    mismatch <- log(1 - missing_0) + log(mismatch_0)
-    match <- log(1 - missing_0) + log(1 - mismatch_0)
+    fixed_match_lh <- log(1-fixed_mismatch_e)
+    fixed_mismatch_lh <- log(fixed_mismatch_e)
+
+    unfixed_mismatch_e <-
+      matrix(unfixed_var_error_rate, nrow = n_unfixed_var, ncol = n_read) %>%
+      (function(x) sweep(x, 2, read_error_rate, `+`, check.margin = FALSE) -
+         sweep(x, 2, read_error_rate, `*`, check.margin = FALSE))
+
+    unfixed_match_lh <- log(1-unfixed_mismatch_e)
+    unfixed_mismatch_lh <- log(unfixed_mismatch_e)
 
     read_chim_lh <-
-      map(seq_len(n_var), function(vi) {
+      map(seq_len(n_unfixed_var), function(vi) {
         map(seq_len(n_read), function(ri) {
-          c(match[vi, ri], mismatch[vi, ri], missing[vi, ri])[chim_read_var_state[, ri, vi]]
+          c(unfixed_match_lh[vi, ri], unfixed_mismatch_lh[vi, ri], 0)[chim_read_var_state[, ri, vi]]
         }) %>% do.call('cbind', .)
       }) %>%
       reduce(`+`) + chim_lh$lh
@@ -158,9 +137,7 @@ hap_mix_em2 <- function(allele_mat,
       rowSums() / read_weight_sum
 
     var_err_posterior <- exp(sweep(-mismatch, 1, log(var_error_rate),  `+`))
-    var_miss_posterior <- exp(sweep(-missing, 1, log(var_miss_rate),  `+`))
     read_err_posterior <- exp(sweep(-mismatch, 2, log(read_error_rate),  `+`))
-    read_miss_posterior <- exp(sweep(-missing, 2, log(read_miss_rate),  `+`))
 
     LH_last <- LH
 
@@ -200,7 +177,7 @@ hap_mix_em2 <- function(allele_mat,
     }
 
     if (n_hap > 1) {
-      ts_rate <- weighted.mean(chim_lh$en, chim_posterior) / chim_width
+      ts_rate <- weighted.mean(chim_lh$en, chim_posterior) / unfixed_width
     }
 
     var_miss_rate <-
