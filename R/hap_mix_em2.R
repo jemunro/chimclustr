@@ -54,12 +54,11 @@ hap_mix_em2 <- function(allele_mat,
   consensus_alleles <- haps[which_fixed, 1]
   fixed_alleles <- allele_mat[which_fixed, ]
   unfixed_alleles <- allele_mat[which_unfixed, ]
-  # var_width <- last(var_pos) - first(var_pos)
-
   error_est <- est_err_rates(allele_mat, haps)
   read_error_rate <- error_est$read_error_rate
-  fixed_var_error_rate <- error_est$var_error_rate[which_fixed]
-  unfixed_var_error_rate <- error_est$var_error_rate[which_unfixed]
+  var_error_rate <- error_est$var_error_rate
+  fixed_var_error_rate <- var_error_rate[which_fixed]
+  unfixed_var_error_rate <- var_error_rate[which_unfixed]
 
   if (is.null(read_weight)) {
     read_weight <- rep(1, n_read)
@@ -90,15 +89,12 @@ hap_mix_em2 <- function(allele_mat,
                    LH = double(),
                    ts_rate = double(),
                    hap_prop = list(),
-                   var_error_rate = list(),
-                   var_miss_rate = list(),
                    read_error_rate = list(),
-                   read_miss_rate = list())
+                   var_error_rate = list())
 
   while(n_iter < max_iter) {
-
     n_iter <- n_iter + 1L
-
+    message(n_iter)
     ##### Expecation #####
     chim_lh <- chimera_lh(chims, hap_prop, ts_rate, var_width = unfixed_width)
 
@@ -109,6 +105,13 @@ hap_mix_em2 <- function(allele_mat,
 
     fixed_match_lh <- log(1-fixed_mismatch_e)
     fixed_mismatch_lh <- log(fixed_mismatch_e)
+
+    read_fixed_lh <-
+      map_dbl(seq_len(n_read), function(ri) {
+        map_dbl(seq_len(n_fixed_var), function(vi) {
+          c(fixed_match_lh[vi, ri], fixed_mismatch_lh[vi, ri], 0)[fixed_read_var_state[vi, ri]]
+        }) %>% sum()
+      })
 
     unfixed_mismatch_e <-
       matrix(unfixed_var_error_rate, nrow = n_unfixed_var, ncol = n_read) %>%
@@ -126,26 +129,30 @@ hap_mix_em2 <- function(allele_mat,
       }) %>%
       reduce(`+`) + chim_lh$lh
 
+    # posterior likelihood of each chimeric state for each read
     read_chim_posterior <-
       read_chim_lh %>%
       exp() %>%
       apply(2, function(x) x / sum(x)) %>%
       matrix(ncol = ncol(read_chim_lh))
 
+    # posterior likelihood of each chimeric state across all reads
     chim_posterior <-
       sweep(read_chim_posterior, 2, read_weight, '*') %>%
       rowSums() / read_weight_sum
 
-    var_err_posterior <- exp(sweep(-mismatch, 1, log(var_error_rate),  `+`))
-    read_err_posterior <- exp(sweep(-mismatch, 2, log(read_error_rate),  `+`))
+    # posterior error likelihoods given error
+    fixed_read_err_post <- exp(sweep(-fixed_mismatch_lh, 2, log(read_error_rate), `+`, check.margin = FALSE))
+    fixed_var_err_post <- exp(sweep(-fixed_mismatch_lh, 1, log(fixed_var_error_rate), `+`, check.margin = FALSE))
+    unfixed_read_err_post <- exp(sweep(-unfixed_mismatch_lh, 2, log(read_error_rate), `+`, check.margin = FALSE))
+    unfixed_var_err_post <- exp(sweep(-unfixed_mismatch_lh, 1, log(unfixed_var_error_rate), `+`, check.margin = FALSE))
 
     LH_last <- LH
 
     LH <-
       read_chim_lh %>%
-      exp() %>%
-      colSums() %>%
-      log() %>%
+      exp() %>% colSums() %>% log() %>%
+      (function(x) x + read_fixed_lh ) %>%
       (function(x) sum(x * read_weight))
 
     # record results
@@ -154,22 +161,14 @@ hap_mix_em2 <- function(allele_mat,
                       LH = LH,
                       ts_rate = ts_rate,
                       hap_prop = list(hap_prop),
-                      var_error_rate = list(var_error_rate),
-                      var_miss_rate = list(var_miss_rate),
                       read_error_rate = list(read_error_rate),
-                      read_miss_rate = list(read_miss_rate))
-
-    ## need to calculate probailities under the model of
-    # each haplotype or chimera
-    # this can be pulled from chim_lh straigthforwardly
-    # should include column here for is chimera
+                      var_error_rate = list(var_error_rate))
 
     if (epsilon > LH - LH_last) {
       break
     }
 
     ##### Maximisation #####
-
     if (!fixed_hap_prop) {
       hap_prop <-
         select(chims$chime_space, starts_with('p')) %>%
@@ -180,35 +179,39 @@ hap_mix_em2 <- function(allele_mat,
       ts_rate <- weighted.mean(chim_lh$en, chim_posterior) / unfixed_width
     }
 
-    var_miss_rate <-
-      map_dbl(seq_len(n_var), function(vi) {
-        weighted.mean(
-          replace(numeric(n_read), var_read_missing[[vi]]$yes, var_miss_posterior[vi, var_read_missing[[vi]]$yes]),
-          read_weight)
-      })
+    fixed_var_error_rate <-
+      map_dbl(seq_len(n_fixed_var), function(vi) {
+        map_dbl(seq_len(n_read), function(ri) {
+          c(0, fixed_var_err_post[vi, ri], NA_real_)[fixed_read_var_state[vi, ri]]
+        }) %>% weighted.mean(read_weight, na.rm = TRUE)
+      }) %>%
+      pmin(0.5)
 
-    read_miss_rate <-
-      map_dbl(seq_len(n_read), function(ri) {
-       replace(numeric(n_var), read_var_missing[[ri]]$yes,  read_miss_posterior[read_var_missing[[ri]]$yes, ri]) %>%
-          mean()
-      })
-
-    var_error_rate <-
-      map_dbl(seq_len(n_var), function(vi) {
-        map_dbl(var_read_missing[[vi]]$no, function(ri) {
+    unfixed_var_error_rate <-
+      map_dbl(seq_len(n_unfixed_var), function(vi) {
+        map_dbl(seq_len(n_read), function(ri) {
           weighted.mean(
-            c(0, var_err_posterior[vi, ri])[chim_read_var_state[, ri, vi]],
+            c(0, unfixed_var_err_post[vi, ri], NA_real_)[chim_read_var_state[, ri, vi]],
             read_chim_posterior[, ri])
-        }) %>% weighted.mean(w = read_weight[var_read_missing[[vi]]$no])
-      })
+        }) %>% weighted.mean(read_weight, na.rm = TRUE)
+      }) %>%
+      pmin(0.5)
+
+    var_error_rate[which_fixed] <- fixed_var_error_rate
+    var_error_rate[which_unfixed] <- unfixed_var_error_rate
 
     read_error_rate <-
       map_dbl(seq_len(n_read), function(ri) {
-        map_dbl(read_var_missing[[ri]]$no, function(vi) {
-          weighted.mean(
-            c(0, read_err_posterior[vi, ri])[chim_read_var_state[, ri, vi]],
-            read_chim_posterior[, ri])
-        }) %>% mean()
+        c(
+          map_dbl(seq_len(n_fixed_var), function(vi) {
+            c(0, fixed_read_err_post[vi, ri], NA_real_)[fixed_read_var_state[vi, ri]]
+          }),
+          map_dbl(seq_len(n_unfixed_var), function(vi) {
+            weighted.mean(
+              c(0, unfixed_read_err_post[vi, ri], NA_real_)[chim_read_var_state[, ri, vi]],
+              read_chim_posterior[, ri])
+          })) %>%
+          mean(na.rm = TRUE)
       })
   }
 
