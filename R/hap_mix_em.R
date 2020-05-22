@@ -203,105 +203,123 @@ enum_chimeras <- function(haps, var_pos, ts_max) {
 
   n_hap <- ncol(haps)
   n_var <- length(var_pos)
-  var_set <- seq_along(var_pos)
-  var_dist <- as.integer(as.matrix(dist(var_pos))) %>%
-    { matrix(., ncol = n_var)}
 
-  hap_space <-
-    seq_len(ts_max + 1) %>%
-    map_df(function(nh) {
-      list(seq_len(n_hap)) %>%
-        rep(nh) %>%
-        setNames(., seq_along(.))%>%
-        do.call('expand_grid', .) %>%
-        mutate(id = seq_len(n())) %>%
-        gather(-id, key = 'index', value = 'haps') %>%
-        arrange(id, index) %>%
-        select(-index) %>%
-        mutate(ns = nh - 1) %>%
-        chop(haps) %>%
-        select(-id)
-    }) %>%
-    mutate(hsid = seq_len(n()))
-
-  ts_space <-
-    seq_len(ts_max) %>%
-    map_df(function(ns) {
-      vars <- t(combn(n_var - 1L, ns))
-      var_index <- seq_len(nrow(vars))
-
-      nrc <-  2 * (ns + 1)
-      ranges <- matrix(0L, nrow = nrow(vars), ncol = nrc)
-      ranges[, 1] <- 1L
-      ranges[,  nrc] <- n_var
-      ranges[, 2 * seq_len(ns)] <- vars
-      ranges[, 2 * seq_len(ns) + 1] <- vars + 1L
-      non_zero_at <- seq.int(2, nrc-1, 2)
-      zero_at <- seq.int(1, nrc-1, 2)
-
-      spans <- ranges[, 1 + seq_len(nrc - 1)] - ranges[, seq_len(nrc - 1)]
-      state_spans <- matrix(0L, nrow = nrow(vars), ncol = ns + 1)
-      state_spans[, seq_len(ns)] <- spans[, non_zero_at] + spans[, zero_at[-(ns+1)]]
-      state_spans[, ns + 1] <- spans[, last(zero_at)]
-
-      widths <-
-        var_dist[inv_arr_ind(ranges[, seq_len(nrc - 1)],
-                             ranges[, 1 + seq_len(nrc - 1)],
-                             nrow(var_dist))] %>%
-        matrix(ncol = nrc - 1)
-
-      tibble(ns = ns,
-             vars = map(var_index, ~ vars[., ]),
-             width_non_zero = map(var_index, ~ widths[., non_zero_at]),
-             width_zero = map(var_index, ~ { widths[., zero_at] %>% keep( ~ . > 0) }),
-             state_span = map(var_index, ~ state_spans[., ]))
-
-    }) %>%
-    mutate(tsid = seq_len(n()) + 1L) %>%
-    { bind_rows(tibble(tsid = 1L,
+  if (n_hap == 1L) {
+    hap_space <- tibble(ns = 0L,
+                        haps = list(1L),
+                        hsid = 1L)
+    ts_space <- tibble(tsid = 1L,
                        ns = 0L,
                        vars = list(integer()),
-                       width_non_zero = list(integer()),
-                       width_zero = list(var_dist[1, n_var]),
-                       state_span = list(n_var - 1L)),
-                .) } %>%
-    select(tsid, ns, everything())
+                       width_non_zero = list(integer(0)),
+                       width_zero = list(1L),
+                       state_span = list(n_var - 1L))
+    chime_space <- tibble(chid = 1L,
+                         ids = list(tibble(hsid = 1L, tsid = 1L)),
+                         ns = 0L,
+                         alleles = list(c(haps)),
+                         p1 = 1,
+                         is_chimera = FALSE)
+  } else {
 
-  ts_state <-
-    map(ts_space$state_span, function(ss) rep(seq_along(ss), ss)) %>%
-    do.call('cbind', .) %>%
-    { rbind(1L, .) }
+    var_set <- seq_along(var_pos)
+    var_dist <- as.integer(as.matrix(dist(var_pos))) %>%
+      { matrix(., ncol = n_var)}
 
-  chime_space <-
-    hap_space %>%
-    full_join(select(ts_space, tsid, ns), by = 'ns') %>%
-    mutate(hap_hash = map2_chr(haps, tsid, function(h, i) digest(h[ts_state[, i]]))) %>%
-    group_by(hap_hash) %>%
-    (function(x) {
-      full_join(
-        select(x, -haps) %>% nest(ids = c(hsid, tsid)) %>% ungroup(),
-        slice(x, 1) %>% mutate(hap_state = map2(haps, tsid, function(h, i) h[ts_state[, i]])) %>%
-          ungroup() %>% select(hap_hash, hap_state),
-        by = 'hap_hash')
-    }) %>%
-    mutate(chid = seq_len(n())) %>%
-    mutate(alleles = map(hap_state, function(hs) {
-      haps[inv_arr_ind(seq_along(hs), hs, length(hs))]
-    })) %>%
-    (function(x) {
-      seq_len(n_hap) %>%
-        setNames(., str_c('p', seq_along(.))) %>%
-        map_dfc(function(h) {
-          map_int(x$hap_state, ~ sum(. == h)) / n_var
-        }) %>%
-        mutate(is_chimera = rowSums(. > 0 & . < 1) > 1) %>%
-        bind_cols(x, .)
-    }) %>%
-    select(chid, ids, ns, alleles, starts_with('p'), is_chimera)
+    hap_space <-
+      seq_len(ts_max + 1) %>%
+      map_df(function(nh) {
+        list(seq_len(n_hap)) %>%
+          rep(nh) %>%
+          setNames(., seq_along(.))%>%
+          do.call('expand_grid', .) %>%
+          mutate(id = seq_len(n())) %>%
+          gather(-id, key = 'index', value = 'haps') %>%
+          arrange(id, index) %>%
+          select(-index) %>%
+          mutate(ns = nh - 1) %>%
+          chop(haps) %>%
+          select(-id)
+      }) %>%
+      mutate(hsid = seq_len(n()))
 
-  return(list(hap_space = hap_space,
-              ts_space = ts_space,
-              chime_space = chime_space))
+    ts_space <-
+      seq_len(ts_max) %>%
+      map_df(function(ns) {
+        vars <- t(combn(n_var - 1L, ns))
+        var_index <- seq_len(nrow(vars))
+
+        nrc <-  2 * (ns + 1)
+        ranges <- matrix(0L, nrow = nrow(vars), ncol = nrc)
+        ranges[, 1] <- 1L
+        ranges[,  nrc] <- n_var
+        ranges[, 2 * seq_len(ns)] <- vars
+        ranges[, 2 * seq_len(ns) + 1] <- vars + 1L
+        non_zero_at <- seq.int(2, nrc-1, 2)
+        zero_at <- seq.int(1, nrc-1, 2)
+
+        spans <- ranges[, 1 + seq_len(nrc - 1)] - ranges[, seq_len(nrc - 1)]
+        state_spans <- matrix(0L, nrow = nrow(vars), ncol = ns + 1)
+        state_spans[, seq_len(ns)] <- spans[, non_zero_at] + spans[, zero_at[-(ns+1)]]
+        state_spans[, ns + 1] <- spans[, last(zero_at)]
+
+        widths <-
+          var_dist[inv_arr_ind(ranges[, seq_len(nrc - 1)],
+                               ranges[, 1 + seq_len(nrc - 1)],
+                               nrow(var_dist))] %>%
+          matrix(ncol = nrc - 1)
+
+        tibble(ns = ns,
+               vars = map(var_index, ~ vars[., ]),
+               width_non_zero = map(var_index, ~ widths[., non_zero_at]),
+               width_zero = map(var_index, ~ { widths[., zero_at] %>% keep( ~ . > 0) }),
+               state_span = map(var_index, ~ state_spans[., ]))
+
+      }) %>%
+      mutate(tsid = seq_len(n()) + 1L) %>%
+      { bind_rows(tibble(tsid = 1L,
+                         ns = 0L,
+                         vars = list(integer()),
+                         width_non_zero = list(integer()),
+                         width_zero = list(var_dist[1, n_var]),
+                         state_span = list(n_var - 1L)),
+                  .) } %>%
+      select(tsid, ns, everything())
+
+    ts_state <-
+      map(ts_space$state_span, function(ss) rep(seq_along(ss), ss)) %>%
+      do.call('cbind', .) %>%
+      { rbind(1L, .) }
+
+    chime_space <-
+      hap_space %>%
+      full_join(select(ts_space, tsid, ns), by = 'ns') %>%
+      mutate(hap_hash = map2_chr(haps, tsid, function(h, i) digest(h[ts_state[, i]]))) %>%
+      group_by(hap_hash) %>%
+      (function(x) {
+        full_join(
+          select(x, -haps) %>% nest(ids = c(hsid, tsid)) %>% ungroup(),
+          slice(x, 1) %>% mutate(hap_state = map2(haps, tsid, function(h, i) h[ts_state[, i]])) %>%
+            ungroup() %>% select(hap_hash, hap_state),
+          by = 'hap_hash')
+      }) %>%
+      mutate(chid = seq_len(n())) %>%
+      mutate(alleles = map(hap_state, function(hs) {
+        haps[inv_arr_ind(seq_along(hs), hs, length(hs))]
+      })) %>%
+      (function(x) {
+        seq_len(n_hap) %>%
+          setNames(., str_c('p', seq_along(.))) %>%
+          map_dfc(function(h) {
+            map_int(x$hap_state, ~ sum(. == h)) / n_var
+          }) %>%
+          mutate(is_chimera = rowSums(. > 0 & . < 1) > 1) %>%
+          bind_cols(x, .)
+      }) %>%
+      select(chid, ids, ns, alleles, starts_with('p'), is_chimera)
+  }
+
+  return(list(hap_space = hap_space, ts_space = ts_space, chime_space = chime_space))
 }
 
 chimera_lh <- function(chimeras, hap_prop, ts_rate, var_width, rescale_lh = TRUE) {

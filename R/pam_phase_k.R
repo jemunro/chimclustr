@@ -60,14 +60,18 @@ pam_hap_k <- function(allele_matrix,
       medoid_impute_missing(allele_matrix[, medoid], allele_matrix[, rid, drop = FALSE])
     })) %>%
     select(-rid) %>%
-    mutate(medoid_hash = map_chr(medoid, digest::digest)) %>%
+    # mutate(medoid_hash = map_chr(medoid, digest::digest)) %>%
+    # group_by(k) %>%
+    # mutate(nc = n(),
+    #        k_hash = sort(medoid_hash) %>% digest::digest()) %>%
+    # group_by(k_hash) %>%
+    # filter(k == min(k),
+    #        nc <= max_clust) %>%
+    # ungroup() %>%
     group_by(k) %>%
-    mutate(nc = n(),
-           k_hash = sort(medoid_hash) %>% digest::digest()) %>%
-    group_by(k_hash) %>%
-    filter(k == min(k),
-           nc <= max_clust) %>%
+    mutate(nc = n()) %>%
     ungroup() %>%
+    filter(nc <= max_clust) %>%
     select(k, cluster, nc,  medoid, medoid_state)
 
   # test if any ratios are plausible
@@ -91,15 +95,25 @@ pam_hap_k <- function(allele_matrix,
     group_by(k) %>%
     filter(all(rel_diff < max_rel_diff)) %>%
     ungroup()
+  # collect all unique hap/ratio combinations
 
-  # highest asw w/o nosie ???
-  pam_best <-
+  k_medoids <-
     pam_medoid %>%
     inner_join(select(pam_ratio, k, cluster, ratio),
-               by = c('k', 'cluster'))
+               by = c('k', 'cluster')) %>%
+    # use hashes to collapse identical states
+    mutate(medoid_hash = map2_chr(medoid_state, ratio, function(x, y) {
+      digest::digest(x*y)
+    })) %>%
+    group_by(k) %>%
+    mutate(k_hash = sort(medoid_hash) %>% digest::digest()) %>%
+    group_by(k_hash) %>%
+    filter(k == min(k)) %>%
+    ungroup() %>%
+    select(-ends_with('hash'))
 
-  return(list(pam_best = pam_best,
-              pam_sil = pam_sil))
+
+  return(list(k_medoids = k_medoids, sil_data = pam_sil))
 
 }
 

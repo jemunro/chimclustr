@@ -14,8 +14,6 @@ hap_mix_em2 <- function(allele_mat,
                         epsilon = 1e-3,
                         read_weight = NULL) {
 
-  # bring back read_count to speed up search
-
   stopifnot(is.matrix(allele_mat),
             is_integer(allele_mat),
             is_integer(var_pos),
@@ -54,18 +52,19 @@ hap_mix_em2 <- function(allele_mat,
   consensus_alleles <- haps[which_fixed, 1]
   fixed_alleles <- allele_mat[which_fixed, ]
   unfixed_alleles <- allele_mat[which_unfixed, ]
-  error_est <- est_err_rates(allele_mat, haps)
-  read_error_rate <- error_est$read_error_rate
-  var_error_rate <- error_est$var_error_rate
-  fixed_var_error_rate <- var_error_rate[which_fixed]
-  unfixed_var_error_rate <- var_error_rate[which_unfixed]
 
   if (is.null(read_weight)) {
     read_weight <- rep(1, n_read)
   }
   read_weight_sum <- sum(read_weight)
 
-  chims <- enum_chimeras(haps[which_unfixed, , drop = FALSE], var_pos = unfixed_pos, ts_max = 2)
+  error_est <- est_err_rates(allele_mat, haps, read_weight)
+  read_error_rate <- error_est$read_error_rate
+  var_error_rate <- error_est$var_error_rate
+  fixed_var_error_rate <- var_error_rate[which_fixed]
+  unfixed_var_error_rate <- var_error_rate[which_unfixed]
+
+  chims <- enum_chimeras(haps[which_unfixed, , drop = FALSE], var_pos = unfixed_pos, ts_max = ts_max)
   n_chim <- nrow(chims$chime_space)
   chim_alleles <- chims$chime_space$alleles %>% do.call('cbind', .)
 
@@ -121,25 +120,32 @@ hap_mix_em2 <- function(allele_mat,
     unfixed_match_lh <- log(1-unfixed_mismatch_e)
     unfixed_mismatch_lh <- log(unfixed_mismatch_e)
 
-    read_chim_lh <-
-      map(seq_len(n_unfixed_var), function(vi) {
-        map(seq_len(n_read), function(ri) {
-          c(unfixed_match_lh[vi, ri], unfixed_mismatch_lh[vi, ri], 0)[chim_read_var_state[, ri, vi]]
-        }) %>% do.call('cbind', .)
-      }) %>%
-      reduce(`+`) + chim_lh$lh
+    if (n_hap > 1) {
+      read_chim_lh <-
+        map(seq_len(n_unfixed_var), function(vi) {
+          map(seq_len(n_read), function(ri) {
+            c(unfixed_match_lh[vi, ri], unfixed_mismatch_lh[vi, ri], 0)[chim_read_var_state[, ri, vi]]
+          }) %>% do.call('cbind', .)
+        }) %>%
+        reduce(`+`) + chim_lh$lh
 
-    # posterior likelihood of each chimeric state for each read
-    read_chim_posterior <-
-      read_chim_lh %>%
-      exp() %>%
-      apply(2, function(x) x / sum(x)) %>%
-      matrix(ncol = ncol(read_chim_lh))
+      # posterior likelihood of each chimeric state for each read
+      read_chim_posterior <-
+        read_chim_lh %>%
+        exp() %>%
+        apply(2, function(x) x / sum(x)) %>%
+        matrix(ncol = ncol(read_chim_lh))
 
-    # posterior likelihood of each chimeric state across all reads
-    chim_posterior <-
-      sweep(read_chim_posterior, 2, read_weight, '*') %>%
-      rowSums() / read_weight_sum
+      # posterior likelihood of each chimeric state across all reads
+      chim_posterior <-
+        sweep(read_chim_posterior, 2, read_weight, '*') %>%
+        rowSums() / read_weight_sum
+
+    } else {
+      read_chim_lh <- matrix(0, nrow = n_chim, ncol = n_read)
+      read_chim_posterior <- matrix(1, nrow = n_chim, ncol = n_read)
+      chim_posterior <- 1
+    }
 
     # posterior error likelihoods given error
     fixed_read_err_post <- exp(sweep(-fixed_mismatch_lh, 2, log(read_error_rate), `+`, check.margin = FALSE))
@@ -241,10 +247,9 @@ hap_mix_em2 <- function(allele_mat,
               read_hap_lh_smry = read_hap_lh_smry))
 }
 
-est_err_rates <- function(allele_mat, haps) {
-  # todo: allow read weights here for working with dereplicated read sets
+est_err_rates <- function(allele_mat, haps, read_weight) {
 
-    stopifnot(is.matrix(allele_mat),
+  stopifnot(is.matrix(allele_mat),
             is.integer(allele_mat),
             is.matrix(haps),
             is.integer(haps),
@@ -252,6 +257,7 @@ est_err_rates <- function(allele_mat, haps) {
 
   n_hap <- ncol(haps)
   n_read <- ncol(allele_mat)
+  n_var <- nrow(allele_mat)
 
   clust <-
     t(cbind(haps, allele_mat)) %>%
@@ -261,31 +267,25 @@ est_err_rates <- function(allele_mat, haps) {
     cluster::daisy(metric = 'gower') %>%
     as.matrix() %>%
     (function(x) {
-      x[-seq_len(n_hap), seq_len(n_hap)] %>%
+      x[-seq_len(n_hap), seq_len(n_hap), drop = FALSE] %>%
         unname() %>%
         apply(1, which.max)
     })
 
   is_err <-
-    map(seq_len(n_read), function(i) {
-      allele_mat[, i] != haps[, clust[i]]
-    }) %>%
+    map(seq_len(n_read), function(i) allele_mat[, i] != haps[, clust[i]]) %>%
     do.call('cbind', .)
 
-  n_row <- nrow(is_err)
-  n_col <- ncol(is_err)
-  global_rate <- sum(is_err, na.rm = T) / sum(!is.na(is_err))
-  # correction for over estimation of missingness when marginalising
-  adj <- (1-sqrt(1-global_rate)) / global_rate
-  row_col_which <- map(seq_len(n_row), function(i) which(is_err[i, ]))
-  row_col_size <- map_int(seq_len(n_row), function(i) sum(!is.na(is_err[i, ])))
-  col_row_which <- map(seq_len(n_col), function(j) which(is_err[, j]))
-  col_row_size <- map_int(seq_len(n_col), function(j) sum(!is.na(is_err[, j])))
-  row_rate <- adj*(lengths(row_col_which) / row_col_size)
-  col_rate <- adj*(lengths(col_row_which) / col_row_size)
+  is_err_count <- sweep(is_err, 2, read_weight, `*`)
+  isnt_na_count <- sweep(!is.na(is_err), 2, read_weight, `*`)
 
-  return(list(var_error_rate = row_rate,
-              read_error_rate = col_rate))
+  global_rate <- sum(is_err_count, na.rm = T) / sum(isnt_na_count)
+  # simple correction for over estimation of missingness when marginalising
+  adj <- (1-sqrt(1-global_rate)) / global_rate
+  row_rate <- adj * rowSums(is_err_count, na.rm = T) / rowSums(isnt_na_count)
+  col_rate <- adj * colSums(is_err_count, na.rm = T) / colSums(isnt_na_count)
+
+  return(list(var_error_rate = row_rate, read_error_rate = col_rate))
 }
 
 marginal_rate_em <- function(x, max_iter = 100L, epsilon = 1e-3) {
