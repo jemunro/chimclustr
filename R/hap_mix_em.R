@@ -89,7 +89,8 @@ hap_mix_em <- function(allele_mat,
                    ts_rate = double(),
                    hap_prop = list(),
                    read_error_rate = list(),
-                   var_error_rate = list())
+                   var_error_rate = list(),
+                   read_hap_post = list())
 
   while(n_iter < max_iter) {
     n_iter <- n_iter + 1L
@@ -161,6 +162,21 @@ hap_mix_em <- function(allele_mat,
       (function(x) x + read_fixed_lh ) %>%
       (function(x) sum(x * read_weight))
 
+    read_hap_post <-
+      tibble(read_id = seq_len(n_read)) %>%
+      bind_cols(
+        select(chims$chime_space, starts_with('p')) %>%
+          mutate(pchimera = if_else(rowSums(. > 0 & . < 1) > 0, 1, 0)) %>%
+          map2_dfc(str_remove(names(.), 'p'), ., function(n, p) {
+            tibble(!!str_c('post_lh_', n) := colSums(read_chim_posterior[which(p == 1), , drop = FALSE]))
+          })) %>%
+      pivot_longer(-read_id,
+                   names_to = c('.value', "haplotype"),
+                   names_pattern = '(.+)_([^_]+)') %>%
+      mutate(haplotype = if_else(haplotype == 'chimera',
+                                 haplotype,
+                                 str_c('hap_', haplotype)))
+
     # record results
     search <- add_row(search,
                       iter = n_iter,
@@ -168,7 +184,8 @@ hap_mix_em <- function(allele_mat,
                       ts_rate = ts_rate,
                       hap_prop = list(hap_prop),
                       read_error_rate = list(read_error_rate),
-                      var_error_rate = list(var_error_rate))
+                      var_error_rate = list(var_error_rate),
+                      read_hap_post = list(read_hap_post))
 
     if (epsilon > LH - LH_last) {
       break
@@ -220,31 +237,7 @@ hap_mix_em <- function(allele_mat,
           mean(na.rm = TRUE)
       })
   }
-
-  read_hap_lh <-
-    tibble(read_id = seq_len(n_read)) %>%
-    bind_cols(
-      select(chims$chime_space, starts_with('p')) %>%
-        mutate(pchimera = if_else(rowSums(. > 0 & . < 1) > 0, 1, 0)) %>%
-        map2_dfc(str_remove(names(.), 'p'), ., function(n, p) {
-          tibble(!!str_c('raw_llh_', n) := log(colSums(exp(read_chim_lh[which(p == 1), , drop = FALSE]))),
-                 !!str_c('post_lh_', n) := colSums(read_chim_posterior[which(p == 1), , drop = FALSE]))
-        })
-    ) %>%
-    pivot_longer(-read_id,
-                 names_to = c('.value', "haplotype"),
-                 names_pattern = '(.+)_([^_]+)')
-
-  read_hap_lh_smry <-
-    read_hap_lh %>%
-    arrange(read_id, desc(post_lh)) %>%
-    group_by(read_id) %>%
-    slice(1) %>%
-    ungroup()
-
-  return(list(search = search,
-              read_hap_lh = read_hap_lh,
-              read_hap_lh_smry = read_hap_lh_smry))
+  return(search)
 }
 
 #' @importFrom digest digest
