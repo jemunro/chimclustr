@@ -1,0 +1,115 @@
+---
+title: "Filter and Phase"
+output: html_notebook
+---
+
+```{r setup}
+stopifnot(require(rlang),
+          require(tidyverse),
+          require(magrittr),
+          require(docopt),
+          require(chimclustr))
+require(tidyverse)
+require(magrittr)
+require(furrr)
+options(future.fork.enable = TRUE)
+options(future.globals.maxSize = Inf)
+plan(multiprocess, workers = 4)
+```
+
+```{r}
+pheatmap::pheatmap(t(read_allele_mat),
+                   cluster_rows = read_hclust,
+                   cluster_cols = FALSE,
+                   show_colnames = FALSE,
+                   show_rownames = FALSE,
+                   annotation_row = row_annot,
+                   annotation_col = col_annot,
+                   annotation_colors = list(status = c(pass = 'chartreuse4', fail = 'darkorange4', low_maf = 'cornflowerblue')),
+                   color = viridisLite::cividis(2),
+                   na_col = 'gray50',
+                   legend = FALSE,
+                   main = 'Read-Allele matrix: pre-filter')
+```
+
+
+```{r}
+pheatmap::pheatmap(t(read_allele_flt),
+                   cluster_rows = read_hclust_2,
+                   cluster_cols = FALSE,
+                   show_colnames = FALSE,
+                   show_rownames = FALSE,
+                   color = viridisLite::cividis(2),
+                   na_col = 'gray50',
+                   legend = FALSE,
+                   main = 'Read Allele Matrix - post-filter')
+```
+
+```{r}
+best <- search$em_res[[2]]
+# lh_plot <-
+best$search %>% 
+  ggplot(aes(iter, LH)) +
+  geom_line() +
+  geom_point() +
+  ylab('log likelhood') +
+  xlab('iteration')
+
+best$search %>% 
+  ggplot(aes(iter, ts_rate)) +
+  geom_line() +
+  geom_point() +
+  ylab('template switching rate') +
+  xlab('iteration')
+
+best$search %>% 
+  select(iter, var_error_rate) %>% 
+  mutate(var_error_rate = map(var_error_rate, ~ tibble(rate = .,
+                                                       var = seq_along(.)))) %>% 
+  unnest(var_error_rate) %>% 
+  mutate(var = as.factor(var)) %>% 
+  ggplot(aes(iter, rate, col = var)) +
+  geom_line() +
+  geom_point() +
+  guides(col = F) +
+  ylab('variant error rate') +
+  xlab('iteration')
+
+best$search %>% 
+  select(iter, read_error_rate) %>% 
+  mutate(read_error_rate = map(read_error_rate, ~ tibble(rate = .,
+                                                         read_id = seq_along(.)))) %>% 
+  unnest(read_error_rate) %>% 
+  left_join(best$read_hap_lh_smry %>% 
+              select(read_id, haplotype, post_lh) %>% 
+              mutate(posterior = if_else(post_lh >= 0.95, 'high', 'low'))) %>% 
+  mutate(read_id = as.factor(read_id)) %>%
+  ggplot(aes(iter, rate, group = read_id)) +
+  geom_line(alpha = 0.5) +
+  # geom_point(alpha = 0.5) +
+  ylab('read error rate') +
+  xlab('iteration') +
+  facet_grid(posterior ~ haplotype, labeller = 'label_both')
+
+
+best$search %>% 
+  select(iter, read_error_rate) %>% 
+  slice(n()) %>% 
+  mutate(read_error_rate = map(read_error_rate, ~ tibble(rate = .,
+                                                         read_id = seq_along(.)))) %>% 
+  unnest(read_error_rate) %>% 
+  left_join(best$read_hap_lh_smry %>% 
+              select(read_id, haplotype, post_lh) %>% 
+              mutate(posterior = if_else(post_lh >= 0.95, 'high', 'low'))) %>% 
+  mutate(read_id = as.factor(read_id)) %>% 
+  ggplot(aes(post_lh, rate)) +
+  geom_point() +
+  facet_wrap(~haplotype) +
+  ylab('error rate')
+```
+
+
+```{r}
+
+```
+
