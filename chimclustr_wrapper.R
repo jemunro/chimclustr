@@ -19,7 +19,7 @@ Options:
   --var-max-miss-rate=<f>     Maximum missing rate per variant frequency for pre-filte[default: 0.25].
   --read-max-miss-rate=<f>    Maximum rate of missing alleles per read for pre-filter [default: 0.05].
   --read-min-lh=<f>           Minimum posterior likelihood of a read assigned to phase [default: 0.99].
-  --read-max-error-rate=<f>   Maximum expected error rate of a read assigned to phase [default: 0.10].
+  --read-max-error-rate=<f>   Maximum expected error rate of a read assigned to phase [default: 0.05].
 " -> doc
 
 opts <-
