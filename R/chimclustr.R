@@ -9,11 +9,13 @@
 chimclustr <- function(allele_matrix,
                        var_pos,
                        max_copy_num,
-                       max_copy_num,
                        var_max_miss_rate,
                        read_max_miss_rate,
                        read_min_lh,
-                       read_max_error_rate) {
+                       read_max_error_rate,
+                       em_max_iter = 25L,
+                       em_ts_max = 3L,
+                       report_filename = NULL) {
 
   stopifnot(is.matrix(allele_matrix),
             is.integer(allele_matrix),
@@ -22,7 +24,8 @@ chimclustr <- function(allele_matrix,
             is_scalar_double(var_max_miss_rate),
             is_scalar_double(read_max_miss_rate),
             is_scalar_double(read_min_lh),
-            is_scalar_double(read_max_error_rate))
+            is_scalar_double(read_max_error_rate),
+            is.null(report_filename) || is_scalar_character(report_filename))
 
   missingness <- marginal_rate_em(is.na(allele_matrix))
   read_pass <- which(missingness$col_rate < 0.05)
@@ -112,15 +115,45 @@ chimclustr <- function(allele_matrix,
                    haps = do.call(cbind, medoid_state),
                    hap_prop = ratio %>% { . / sum(.) },
                    ts_rate = 1e-4,
-                   ts_max = 3,
-                   max_iter = 10,
+                   ts_max = em_ts_max,
+                   max_iter = em_max_iter,
                    fixed_hap_prop = TRUE,
                    epsilon = 1e-2))) %>%
     mutate(LH = map_dbl(em_res, ~last(.$LH)),
            label = str_c(label, ', LH=', format(LH)))
 
+  if (!is.null(report_filename)) {
+    chimclustr_report(filename = report_filename,
+                      plot_1_data = plot_1_data,
+                      plot_2_data = plot_2_data,
+                      sil_data = pam_hap_k$sil_data,
+                      read_allele_flt = read_allele_flt,
+                      hap_em_search = hap_em_search)
+  }
+
   ## final results
   # table w read_id, haplotype, status, missing_rate, error_rate, posterior
+  result <-
+    hap_em_search %>%
+    with(em_res[[which.max(LH)]]) %>%
+    with(last(read_hap_post) %>%
+           group_by(read_id) %>%
+           slice(which.max(post_lh)) %>%
+           ungroup() %>%
+           arrange(read_id) %>%
+           mutate(error_rate = last(read_error_rate))) %>%
+    full_join(tibble(read_name = colnames(allele_matrix),
+                     pass = seq_along(read_name) %in% read_pass,
+                     read_id = if_else(pass, cumsum(pass), NA_integer_),
+                     missing_rate = missingness$col_rate) %>%
+                select(-pass),
+              by = 'read_id') %>%
+    select(read_name, haplotype, posterior = post_lh, error_rate, missing_rate) %>%
+    mutate(status = if_else(posterior >= read_min_lh & error_rate <= read_max_error_rate & haplotype != 'chimera',
+                            'pass', 'fail', missing = 'fail')) %>%
+    arrange(read_name)
+
+  return(result)
 }
 
 #' @importFrom rlang is_scalar_character
@@ -134,13 +167,20 @@ chimclustr_report <- function(filename,
   stopifnot(is_scalar_character(filename))
 
   filename <- `if`(str_ends(filename, '\\.html'), filename, str_c(filename, '.html'))
-  message(str_c("saving report to ", filename))
+  if (!file.exists(filename)) {
+    # creating file forces normalizePath to return full path when a relative filename is used
+    invisible(file.create(filename))
+  }
+  filename <- normalizePath(filename)
 
-  rmd_file <- system.file(file.path('Rmd', 'chimclustr_report.Rmd'), package = 'chimclsutr', mustWork = TRUE)
-  rmd_env <- list2env(data, envir = new.env())
+  rmd_file <- system.file(file.path('Rmd', 'chimclustr_report.Rmd'), package = 'chimclustr', mustWork = TRUE)
+  rmd_file_tmp <- file.path(dirname(filename), str_c('.', basename(rmd_file)))
+  invisible(file.copy(rmd_file, rmd_file_tmp, overwrite = TRUE))
 
-  rmarkdown::render(input = rmd_file,
+  rmarkdown::render(input = rmd_file_tmp,
                     output_file = filename,
                     envir = environment())
+  message(str_c("Chimclustr report saved to ", filename))
+  invisible(file.remove(rmd_file_tmp))
 }
 

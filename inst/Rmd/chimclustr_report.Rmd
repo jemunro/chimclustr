@@ -3,7 +3,8 @@ title: "Chimclustr report"
 output: html_document
 ---
 
-```{r setup}
+```{r setup, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 stopifnot(require(tidyverse),
           require(pheatmap),
           require(cowplot))
@@ -14,6 +15,7 @@ stopifnot(exists("plot_1_data"),
           exists("hap_em_search"))
 ```
 
+### Pre-filter Read-Allele Heatmap
 ```{r plot_1, fig.width=8, fig.height=6}
 pheatmap(mat = plot_1_data$mat,
          cluster_rows = plot_1_data$row_hclust,
@@ -28,6 +30,7 @@ pheatmap(mat = plot_1_data$mat,
          legend = FALSE)
 ```
 
+### PAM-k clustering Read-Allele heatmap
 ```{r plot_2, fig.width=8, fig.height=6}
 pheatmap(mat = plot_2_data$mat,
          cluster_rows = plot_2_data$row_hclust,
@@ -36,7 +39,7 @@ pheatmap(mat = plot_2_data$mat,
          show_rownames = FALSE,
          color = viridisLite::cividis(2),
          annotation_row = plot_2_data$row_annot,
-         annotation_colors = row_clust_col,
+         annotation_colors = plot_2_data$annot_color,
          annotation_legend = FALSE,
          na_col = 'gray50',
          legend = FALSE)
@@ -56,7 +59,7 @@ sil_data %>%
   theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
         axis.title.y = element_blank()) +
   facet_wrap(~lab, scales = 'free_y') +
-  ggtitle('Cluster silhouette plot')
+  ggtitle('PAM-k clustering silhouette plots')
 ```
 
 ```{r sil_plots_2, fig.width=8, fig.height=6}
@@ -82,7 +85,7 @@ sil_data %>%
   scale_linetype_manual(name = NULL, values = c(1,2,1,1),
                         guide = guide_legend(override.aes = list(color = c("black", "black", "red", 'darkblue')))) +
   facet_grid(~k, scales = 'free_x', space = 'free_x', labeller = 'label_both') +
-  ggtitle('Cluster silhouette boxplot')
+  ggtitle('PAM-k clustering silhouette width boxplot')
 ```
 
 ```{r make_plot_lists}
