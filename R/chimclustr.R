@@ -5,7 +5,7 @@
 #' @importFrom pheatmap pheatmap
 #' @importFrom purrr map pmap map_dbl map_chr map_int map_lgl reduce
 #' @importFrom rlang is_integerish is_scalar_double
-
+#' @export
 chimclustr <- function(allele_matrix,
                        var_pos,
                        max_copy_num,
@@ -52,7 +52,9 @@ chimclustr <- function(allele_matrix,
            hclust(method = 'average'))
 
   read_allele_flt <- allele_matrix[var_pass, read_pass]
-  pam_hap_k <- pam_hap_k(read_allele_flt, max_clust = 4)
+  pam_hap_k <- pam_hap_k(read_allele_flt,
+                         max_clust = max_copy_num,
+                         min_ploidy = min_copy_num)
 
   plot_2_data <-
     list(mat = t(read_allele_flt) %>% set_rownames(seq_len(nrow(.))),

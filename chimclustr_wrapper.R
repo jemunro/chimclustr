@@ -57,7 +57,7 @@ allele_matrix <-
 
 result <- chimclustr(allele_matrix = allele_matrix,
                      var_pos = var_pos,
-                     max_copy_num = 4,
+                     max_copy_num = max_copy_num,
                      var_max_miss_rate = var_max_miss_rate,
                      read_max_miss_rate = read_max_miss_rate,
                      read_min_lh = read_min_lh,

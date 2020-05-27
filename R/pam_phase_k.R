@@ -1,6 +1,7 @@
 
 pam_hap_k <- function(allele_matrix,
                       max_clust = 4,
+                      min_ploidy = 1,
                       max_k = max_clust + 2,
                       noise_rel_asw = 0.5,
                       max_rel_diff = 0.25) {
@@ -82,7 +83,7 @@ pam_hap_k <- function(allele_matrix,
     select(k, nc, prop, cluster) %>%
     chop(c(prop, cluster)) %>%
     mutate(ratio = map2(nc, prop, function(nc, prop) {
-      enum_hap_ratios(nc) %>%
+      enum_hap_ratios(nc, min_ploidy = max(nc, min_ploidy), max_ploidy = max_clust) %>%
         rowwise() %>%
         mutate(sim = lsa::cosine(ratio, prop)) %>%
         arrange(desc(sim)) %>%
@@ -149,7 +150,7 @@ medoid_impute_missing <- function(med_state, state_matrix) {
 }
 
 
-enum_hap_ratios <- function(n_haps, min_ploidy = n_haps, max_ploidy = 4L) {
+enum_hap_ratios <- function(n_haps, min_ploidy = n_haps, max_ploidy = n_haps) {
 
   map_df(seq.int(min_ploidy, max_ploidy), function(ploidy) {
     rep(list(seq_len(n_haps)), ploidy) %>%
