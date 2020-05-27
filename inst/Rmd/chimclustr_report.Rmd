@@ -78,12 +78,10 @@ sil_data %>%
   geom_hline(aes(linetype = 'max asw w/o noise', yintercept = max(pam_k_asw$k_asw_filt)),
              col = 'red') +
   geom_hline(data = pam_k_asw, aes(yintercept = k_asw, linetype = 'asw')) +
-  geom_hline(data = pam_k_asw, aes(yintercept = k_asw/2, linetype = 'noise threshold'),
-             col='darkblue') +
   geom_hline(data = pam_k_asw, aes(yintercept = k_asw_filt, linetype = 'asw w/o noise')) +
   scale_fill_manual(name = 'noise', values = c(`TRUE` = 'gray50', `FALSE` = 'gray80')) +
-  scale_linetype_manual(name = NULL, values = c(1,2,1,1),
-                        guide = guide_legend(override.aes = list(color = c("black", "black", "red", 'darkblue')))) +
+  scale_linetype_manual(name = NULL, values = c(1,2,1),
+                        guide = guide_legend(override.aes = list(color = c("black", "black", "red")))) +
   facet_grid(~k, scales = 'free_x', space = 'free_x', labeller = 'label_both') +
   ggtitle('PAM-k clustering silhouette width boxplot')
 ```

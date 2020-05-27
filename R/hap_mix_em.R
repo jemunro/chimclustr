@@ -12,7 +12,8 @@ hap_mix_em <- function(allele_mat,
                        max_iter = 20,
                        fixed_hap_prop = FALSE,
                        epsilon = 1e-3,
-                       read_weight = NULL) {
+                       read_weight = NULL,
+                       zero_chim_var_rate = TRUE) {
 
   stopifnot(is.matrix(allele_mat),
             is_integer(allele_mat),
@@ -63,6 +64,9 @@ hap_mix_em <- function(allele_mat,
   var_error_rate <- error_est$var_error_rate
   fixed_var_error_rate <- var_error_rate[which_fixed]
   unfixed_var_error_rate <- var_error_rate[which_unfixed]
+  if (zero_chim_var_rate) {
+    unfixed_var_error_rate[] <- 0
+  }
 
   chims <- enum_chimeras(haps[which_unfixed, , drop = FALSE], var_pos = unfixed_pos, ts_max = ts_max)
   n_chim <- nrow(chims$chime_space)
@@ -74,7 +78,7 @@ hap_mix_em <- function(allele_mat,
       map(seq_len(n_read), function(r) {
         if_else(chim_alleles[v, ] == unfixed_alleles[v, r], 1L, 2L, missing = 3L)
       }) %>% do.call('cbind', .)
-    }) %>% abind::abind(along = 3)
+    }) %>% abind(along = 3)
 
   fixed_read_var_state <-
     map(seq_len(n_fixed_var), function(v) {
@@ -210,15 +214,19 @@ hap_mix_em <- function(allele_mat,
       }) %>%
       pmin(0.5)
 
-    unfixed_var_error_rate <-
-      map_dbl(seq_len(n_unfixed_var), function(vi) {
-        map_dbl(seq_len(n_read), function(ri) {
-          weighted.mean(
-            c(0, unfixed_var_err_post[vi, ri], NA_real_)[chim_read_var_state[, ri, vi]],
-            read_chim_posterior[, ri])
-        }) %>% weighted.mean(read_weight, na.rm = TRUE)
-      }) %>%
-      pmin(0.5)
+    if (zero_chim_var_rate) {
+      unfixed_var_error_rate[] <- 0
+    } else {
+      unfixed_var_error_rate <-
+        map_dbl(seq_len(n_unfixed_var), function(vi) {
+          map_dbl(seq_len(n_read), function(ri) {
+            weighted.mean(
+              c(0, unfixed_var_err_post[vi, ri], NA_real_)[chim_read_var_state[, ri, vi]],
+              read_chim_posterior[, ri])
+          }) %>% weighted.mean(read_weight, na.rm = TRUE)
+        }) %>%
+        pmin(0.5)
+    }
 
     var_error_rate[which_fixed] <- fixed_var_error_rate
     var_error_rate[which_unfixed] <- unfixed_var_error_rate

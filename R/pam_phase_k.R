@@ -2,8 +2,9 @@
 pam_hap_k <- function(allele_matrix,
                       max_clust = 4,
                       min_ploidy = 1,
-                      max_k = max_clust + 2,
+                      max_k = max_clust * 2,
                       noise_rel_asw = 0.5,
+                      max_noise_prop = 1/3,
                       max_rel_diff = 0.25) {
 
   dissim <-
@@ -28,12 +29,13 @@ pam_hap_k <- function(allele_matrix,
     select(-pamobj) %>%
     unnest(sildata) %>%
     group_by(k, cluster) %>%
-    mutate(cluster_asw = mean(sil_width)) %>%
+    mutate(cluster_asw = mean(sil_width),
+           cluster_prop = n() / ncol(allele_matrix)) %>%
     group_by(k) %>%
     mutate(k_asw = mean(sil_width)) %>%
     ungroup() %>%
     group_by(k, cluster) %>%
-    mutate(is_noise = cluster_asw < noise_rel_asw * abs(k_asw)) %>%
+    mutate(is_noise = (cluster_asw < noise_rel_asw * abs(k_asw)) & (cluster_prop < max_noise_prop)) %>%
     group_by(k) %>%
     mutate(k_asw_filt = mean(sil_width[!is_noise])) %>%
     chop(c(rid, sil_width)) %>%
@@ -61,14 +63,6 @@ pam_hap_k <- function(allele_matrix,
       medoid_impute_missing(allele_matrix[, medoid], allele_matrix[, rid, drop = FALSE])
     })) %>%
     select(-rid) %>%
-    # mutate(medoid_hash = map_chr(medoid, digest::digest)) %>%
-    # group_by(k) %>%
-    # mutate(nc = n(),
-    #        k_hash = sort(medoid_hash) %>% digest::digest()) %>%
-    # group_by(k_hash) %>%
-    # filter(k == min(k),
-    #        nc <= max_clust) %>%
-    # ungroup() %>%
     group_by(k) %>%
     mutate(nc = n()) %>%
     ungroup() %>%
@@ -85,7 +79,7 @@ pam_hap_k <- function(allele_matrix,
     mutate(ratio = map2(nc, prop, function(nc, prop) {
       enum_hap_ratios(nc, min_ploidy = max(nc, min_ploidy), max_ploidy = max_clust) %>%
         rowwise() %>%
-        mutate(sim = lsa::cosine(ratio, prop)) %>%
+        mutate(sim = cosine(ratio, prop)) %>%
         arrange(desc(sim)) %>%
         pull(ratio) %>%
         first()

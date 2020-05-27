@@ -15,6 +15,13 @@ log_sum <- function(x) {
   }
 }
 
+cosine <- function(x, y) {
+  stopifnot(is.vector(x),
+            is.vector(y),
+            length(x) == length(y))
+  return(c(crossprod(x, y) / sqrt(crossprod(x) * crossprod(y))))
+}
+
 inv_arr_ind <- function(row_idx, col_idx, nrow) {
 
   stopifnot(length(row_idx) == length(col_idx),

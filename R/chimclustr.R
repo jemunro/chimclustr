@@ -1,6 +1,6 @@
 
 #' @importFrom dplyr first last mutate mutate_all select filter arrange desc
-#' @importFrom magrittr '%>%' set_rownames set_colnames
+#' @importFrom magrittr '%>%' '%<>%' set_rownames set_colnames
 #' @importFrom tibble tibble as_tibble column_to_rownames
 #' @importFrom pheatmap pheatmap
 #' @importFrom purrr map pmap map_dbl map_chr map_int map_lgl reduce
@@ -79,22 +79,6 @@ chimclustr <- function(allele_matrix,
     plot_2_data$row_annot %>%
     map(unique) %>%
     map(~ set_names(scales::hue_pal()(length(.)), .))
-
-  ## visualise clustering silhouette
-  pam_hap_k$sil_data %>%
-    filter(k > 1) %>%
-    select(k, cluster, rid, sil_width, is_noise, k_asw) %>%
-    mutate(lab = str_c('k = ', k,', asw = ', format(k_asw, digits = 2))) %>%
-    unnest(c(rid, sil_width)) %>%
-    arrange(k, desc(cluster), sil_width) %>%
-    mutate(kcr = str_c(k, cluster, rid, sep = '_') %>% as_factor()) %>%
-    ggplot(aes(kcr, sil_width, fill = cluster, col = cluster)) +
-    coord_flip() +
-    geom_col() +
-    theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
-          axis.title.y = element_blank()) +
-    facet_wrap(~lab, scales = 'free_y') +
-    ggtitle('Cluster silhouette plot')
 
   # # speed up EM a bit
   # read_derep <-
