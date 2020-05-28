@@ -2,7 +2,7 @@
 pam_hap_k <- function(allele_matrix,
                       max_clust = 4,
                       min_ploidy = 1,
-                      max_k = max_clust * 2,
+                      max_k = max_clust + 2,
                       noise_rel_asw = 0.5,
                       max_noise_prop = 1/3,
                       max_rel_diff = 0.25) {

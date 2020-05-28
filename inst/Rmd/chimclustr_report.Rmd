@@ -99,6 +99,15 @@ em_plots <-
       ylab('log likelihood') +
       xlab('iteration')
     
+    p_ts <-
+      em_res %>%
+      select(iter, ts_rate) %>%
+      ggplot(aes(iter, ts_rate)) +
+      geom_line() +
+      geom_point(size = 0.5) +
+      ylab('TS rate') +
+      xlab('iteration')
+    
     p_ve <-
       em_res %>%
       select(iter, rate = var_error_rate) %>%
@@ -136,7 +145,7 @@ em_plots <-
       xlab('iteration') +
       facet_wrap(~haplotype, ncol = 1)
     
-    p1 <- plot_grid(p_lh, p_ve, p_re, align = 'v', ncol = 1)
+    p1 <- plot_grid(p_lh, p_ts, p_ve, p_re, align = 'v', ncol = 1)
     p2 <- plot_grid(p1, p_post, ncol = 2)
     plot_grid(ggdraw() + draw_text(str_c('Haplotype Mixture EM Inspection (', label, ')')), p2,
               ncol = 1, rel_heights = c(1,15))
@@ -193,14 +202,16 @@ phase_plots <-
     
     p3 <-
       read_data %>%
-      ggplot(aes(x='x', read_id, fill = error_rate)) +
+      rename(error = error_rate) %>% 
+      ggplot(aes(x='x', read_id, fill = error)) +
       geom_tile() +
       theme() +
       scale_fill_viridis_c(limits = c(0,1)) +
       facet_grid(haplotype ~ ., space='free_y', scales = 'free_y', switch = 'both') +
       theme(legend.position = 'top', strip.background = element_blank(), strip.text = element_blank(),
             axis.ticks = element_blank(), axis.text = element_blank(), axis.title.y = element_blank(),
-            plot.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt")) +
+            plot.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt"),
+            legend.text = element_text(size = 9)) +
       xlab('error')
     
     p4 <-
@@ -213,13 +224,15 @@ phase_plots <-
       facet_grid(haplotype ~ ., space='free_y', scales = 'free_y', switch = 'both') +
       theme(legend.position = 'top', strip.background = element_blank(), strip.text = element_blank(),
             axis.ticks = element_blank(), axis.text = element_blank(), axis.title.y = element_blank(),
-            plot.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt")) +
+            plot.margin = margin(t = 0, r = 0, b = 0, l = 0, unit = "pt"),
+            legend.text = element_text(size = 9)) +
       xlab('posterior')
     
     rm_legend <- theme(legend.position = 'none')
     
     title <- ggdraw() + draw_text(str_c('Haplotype Mixture EM Results (', label, ')'))
-    pt <- plot_grid(get_legend(p1), get_legend(p2), get_legend(p3), get_legend(p4), nrow = 1)
+    pt <- plot_grid(ggdraw(), get_legend(p1), get_legend(p2), get_legend(p3), get_legend(p4), ggdraw(),
+                    nrow = 1, rel_widths = c(1,10,10,10,10,1))
     pb <- plot_grid(p1 + rm_legend, p2 + rm_legend, p3 + rm_legend, p4 + rm_legend, nrow = 1, rel_widths = c(10,1,1,1), align = 'h', axis = 'bt')
     plot_grid(title, pt, pb, ncol = 1, rel_heights = c(1, 1, 10))
   })
