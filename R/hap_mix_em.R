@@ -1,6 +1,7 @@
 
 #' @importFrom rlang is_bool is_integer is_scalar_double
-#' @importFrom dplyr first last mutate
+#' @importFrom dplyr first last mutate left_join
+#' @importFrom tidyr unnest chop expand_grid
 #' @importFrom abind abind
 hap_mix_em <- function(allele_mat,
                        var_pos,
@@ -54,6 +55,9 @@ hap_mix_em <- function(allele_mat,
   fixed_alleles <- allele_mat[which_fixed, ]
   unfixed_alleles <- allele_mat[which_unfixed, ]
 
+  # can't switch more than number of 'unfixed' vars
+  ts_max <- max(0, min(n_unfixed_var - 1, ts_max))
+
   if (is.null(read_weight)) {
     read_weight <- rep(1, n_read)
   }
@@ -66,6 +70,7 @@ hap_mix_em <- function(allele_mat,
   unfixed_var_error_rate <- var_error_rate[which_unfixed]
   if (zero_chim_var_rate) {
     unfixed_var_error_rate[] <- 0
+    var_error_rate[which_unfixed] <- 0
   }
 
   chims <- enum_chimeras(haps[which_unfixed, , drop = FALSE], var_pos = unfixed_pos, ts_max = ts_max)
@@ -136,8 +141,7 @@ hap_mix_em <- function(allele_mat,
 
       # posterior likelihood of each chimeric state for each read
       read_chim_posterior <-
-        read_chim_lh %>%
-        exp() %>%
+        exp(read_chim_lh) %>%
         apply(2, function(x) x / sum(x)) %>%
         matrix(ncol = ncol(read_chim_lh))
 
@@ -161,8 +165,8 @@ hap_mix_em <- function(allele_mat,
     LH_last <- LH
 
     LH <-
-      read_chim_lh %>%
-      exp() %>% colSums() %>% log() %>%
+      exp(read_chim_lh) %>%
+      colSums() %>% log() %>%
       (function(x) x + read_fixed_lh ) %>%
       (function(x) sum(x * read_weight))
 
@@ -308,10 +312,10 @@ enum_chimeras <- function(haps, var_pos, ts_max) {
         non_zero_at <- seq.int(2, nrc-1, 2)
         zero_at <- seq.int(1, nrc-1, 2)
 
-        spans <- ranges[, 1 + seq_len(nrc - 1)] - ranges[, seq_len(nrc - 1)]
+        spans <- ranges[, 1 + seq_len(nrc - 1), drop = F] - ranges[, seq_len(nrc - 1), drop = F]
         state_spans <- matrix(0L, nrow = nrow(vars), ncol = ns + 1)
         state_spans[, seq_len(ns)] <- spans[, non_zero_at] + spans[, zero_at[-(ns+1)]]
-        state_spans[, ns + 1] <- spans[, last(zero_at)]
+        state_spans[, ns + 1] <- spans[, last(zero_at)] + 1
 
         widths <-
           var_dist[inv_arr_ind(ranges[, seq_len(nrc - 1)],
@@ -332,14 +336,13 @@ enum_chimeras <- function(haps, var_pos, ts_max) {
                          vars = list(integer()),
                          width_non_zero = list(integer()),
                          width_zero = list(var_dist[1, n_var]),
-                         state_span = list(n_var - 1L)),
+                         state_span = list(n_var)),
                   .) } %>%
       select(tsid, ns, everything())
 
     ts_state <-
       map(ts_space$state_span, function(ss) rep(seq_along(ss), ss)) %>%
-      do.call('cbind', .) %>%
-      { rbind(1L, .) }
+      do.call('cbind', .)
 
     chime_space <-
       hap_space %>%
@@ -396,7 +399,7 @@ chimera_lh <- function(chimeras, hap_prop, ts_rate, var_width, rescale_lh = TRUE
 
   if (rescale_lh) {
     # ts_rate and ts_lh will be under-estimated if we exclude events with rate > ts_max
-    # we can rescale en to account for this simplification
+    # we can rescale to account for this simplification
     ts_lh$tslh %<>% exp() %>% { . / sum(.) } %>% log()
     en_sub <- with(ts_lh, sum(exp(tslh) * en))
     ts_lh$en %<>% { . * ( ts_rate * var_width / en_sub) }

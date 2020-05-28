@@ -9,6 +9,7 @@
 chimclustr <- function(allele_matrix,
                        var_pos,
                        max_copy_num,
+                       min_copy_num,
                        var_max_miss_rate,
                        read_max_miss_rate,
                        read_min_lh,
