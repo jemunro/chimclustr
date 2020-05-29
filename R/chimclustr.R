@@ -53,21 +53,25 @@ chimclustr <- function(allele_matrix,
            hclust(method = 'average'))
 
   read_allele_flt <- allele_matrix[var_pass, read_pass]
-  pam_hap_k <- pam_hap_k(read_allele_flt,
-                         max_clust = max_copy_num,
-                         min_ploidy = min_copy_num)
+  # pam_hap_k <- pam_hap_k(read_allele_flt,
+  #                        max_clust = max_copy_num,
+  #                        min_ploidy = min_copy_num)
+
+  phase_cand <- get_phase_candidates(allele_matrix = read_allele_flt,
+                                     max_phases = max_copy_num,
+                                     min_ploidy = min_copy_num)
 
   plot_2_data <-
     list(mat = t(read_allele_flt) %>% set_rownames(seq_len(nrow(.))),
          row_annot =
-           pam_hap_k$sil_data %>%
-           filter(k > 1) %>%
-           select(k, cluster, rid) %>%
-           unnest(rid) %>%
-           pivot_wider(names_from = k, values_from = cluster, names_prefix = 'k_') %>%
-           arrange(rid) %>%
+           phase_cand$derep_state %>%
+           filter(n - n_imp > 1) %>%
+           semi_join(phase_cand$phases, 'rep_id') %>%
+           select(read_id, rep_id) %>%
+           mutate(rep_id = as.character(rep_id)) %>%
+           unnest(read_id) %>%
            as.data.frame() %>%
-           column_to_rownames('rid'),
+           column_to_rownames('read_id'),
          row_hclust =
            t(read_allele_flt) %>%
            as_tibble() %>%
@@ -92,14 +96,14 @@ chimclustr <- function(allele_matrix,
   #   select(-hash)
 
   hap_em_search <-
-    pam_hap_k$k_medoids %>%
-    group_by(k) %>%
+    phase_cand$phases %>%
+    group_by(id) %>%
     summarise(
-      label = str_c('k=', first(k), ', nc=', first(nc), ', ratio=', str_c(ratio, collapse = ':')),
+      label = str_c('nc=', first(nc), ', rep_id=', str_c(rep_id, collapse = ';'), ', ratio=', str_c(ratio, collapse = ':')),
       em_res = list(
         hap_mix_em(allele_mat = unname(read_allele_flt),
                    var_pos = var_pos[var_pass],
-                   haps = do.call(cbind, medoid_state),
+                   haps = do.call(cbind, state),
                    hap_prop = ratio %>% { . / sum(.) },
                    ts_rate = 1e-4,
                    ts_max = em_ts_max,
@@ -115,10 +119,13 @@ chimclustr <- function(allele_matrix,
                       plot_2_data = plot_2_data,
                       sil_data = pam_hap_k$sil_data,
                       read_allele_flt = read_allele_flt,
-                      hap_em_search = hap_em_search)
+                      hap_em_search = hap_em_search,
+                      read_min_lh = read_min_lh,
+                      read_max_error_rate = read_max_error_rate)
   }
 
   ## final results
+  # TODO: include proposed ratio/copy number as well
   # table w read_id, haplotype, status, missing_rate, error_rate, posterior
   result <-
     hap_em_search %>%
@@ -149,7 +156,9 @@ chimclustr_report <- function(filename,
                               plot_2_data,
                               sil_data,
                               read_allele_flt,
-                              hap_em_search) {
+                              hap_em_search,
+                              read_min_lh,
+                              read_max_error_rate) {
 
   stopifnot(is_scalar_character(filename))
 
@@ -163,6 +172,7 @@ chimclustr_report <- function(filename,
   rmd_file <- system.file(file.path('Rmd', 'chimclustr_report.Rmd'), package = 'chimclustr', mustWork = TRUE)
   rmd_file_tmp <- file.path(dirname(filename), str_c('.', basename(rmd_file)))
   invisible(file.copy(rmd_file, rmd_file_tmp, overwrite = TRUE))
+  name <- basename(filename) %>% str_remove('.html$')
 
   rmarkdown::render(input = rmd_file_tmp,
                     output_file = filename,

@@ -10,10 +10,13 @@ stopifnot(require(tidyverse),
           require(cowplot))
 stopifnot(exists("plot_1_data"),
           exists("plot_2_data"),
-          exists("sil_data"),
           exists("read_allele_flt"),
-          exists("hap_em_search"))
+          exists("hap_em_search"),
+          exists("read_min_lh"),
+          exists("read_max_error_rate"))
 ```
+
+### `r name`
 
 ### Pre-filter Read-Allele Heatmap
 ```{r plot_1, fig.width=8, fig.height=6}
@@ -30,7 +33,7 @@ pheatmap(mat = plot_1_data$mat,
          legend = FALSE)
 ```
 
-### PAM-k clustering Read-Allele heatmap
+### Read-Allele Heatmap Non-singleton states
 ```{r plot_2, fig.width=8, fig.height=6}
 pheatmap(mat = plot_2_data$mat,
          cluster_rows = plot_2_data$row_hclust,
@@ -40,50 +43,8 @@ pheatmap(mat = plot_2_data$mat,
          color = viridisLite::cividis(2),
          annotation_row = plot_2_data$row_annot,
          annotation_colors = plot_2_data$annot_color,
-         annotation_legend = FALSE,
          na_col = 'gray50',
          legend = FALSE)
-```
-
-```{r sil_plots, fig.width=8, fig.height=6}
-sil_data %>%
-  filter(k > 1) %>%
-  select(k, cluster, rid, sil_width, is_noise, k_asw) %>%
-  mutate(lab = str_c('k = ', k,', asw = ', format(k_asw, digits = 2))) %>%
-  unnest(c(rid, sil_width)) %>%
-  arrange(k, desc(cluster), sil_width) %>%
-  mutate(kcr = str_c(k, cluster, rid, sep = '_') %>% as_factor()) %>%
-  ggplot(aes(kcr, sil_width, fill = cluster, col = cluster)) +
-  coord_flip() +
-  geom_col() +
-  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
-        axis.title.y = element_blank()) +
-  facet_wrap(~lab, scales = 'free_y') +
-  ggtitle('PAM-k clustering silhouette plots')
-```
-
-```{r sil_plots_2, fig.width=8, fig.height=6}
-pam_k_asw <-
-  sil_data %>%
-  filter(k > 1) %>%
-  select(k, k_asw, k_asw_filt) %>%
-  distinct()
-
-sil_data %>%
-  filter(k > 1) %>%
-  select(k, cluster, sil_width, is_noise, k_asw, k_asw_filt) %>%
-  unnest(sil_width) %>%
-  ggplot(aes(cluster, sil_width)) +
-  geom_boxplot(aes(fill = is_noise), col = 'gray25') +
-  geom_hline(aes(linetype = 'max asw w/o noise', yintercept = max(pam_k_asw$k_asw_filt)),
-             col = 'red') +
-  geom_hline(data = pam_k_asw, aes(yintercept = k_asw, linetype = 'asw')) +
-  geom_hline(data = pam_k_asw, aes(yintercept = k_asw_filt, linetype = 'asw w/o noise')) +
-  scale_fill_manual(name = 'noise', values = c(`TRUE` = 'gray50', `FALSE` = 'gray80')) +
-  scale_linetype_manual(name = NULL, values = c(1,2,1),
-                        guide = guide_legend(override.aes = list(color = c("black", "black", "red")))) +
-  facet_grid(~k, scales = 'free_x', space = 'free_x', labeller = 'label_both') +
-  ggtitle('PAM-k clustering silhouette width boxplot')
 ```
 
 ```{r make_plot_lists}
@@ -163,8 +124,11 @@ phase_plots <-
       arrange(read_id) %>%
       mutate(error_rate = last(em_res$read_error_rate)) %>%
       select(read_id, haplotype, post_lh, error_rate) %>%
-      mutate(status = if_else(error_rate < 0.05 & post_lh > 0.99 & haplotype != 'chimera', 'pass', 'fail')) %>%
-      arrange(desc(haplotype), status, desc(error_rate), post_lh) %>%
+      mutate(status = if_else(error_rate < read_max_error_rate &
+                                post_lh > read_min_lh & 
+                                haplotype != 'chimera',
+                              'pass', 'fail')) %>%
+      arrange(desc(haplotype), status, post_lh, desc(error_rate) ) %>%
       mutate(read_id = as_factor(as.character(read_id)))
     
     p1 <-
