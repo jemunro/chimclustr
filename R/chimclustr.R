@@ -53,10 +53,6 @@ chimclustr <- function(allele_matrix,
            hclust(method = 'average'))
 
   read_allele_flt <- allele_matrix[var_pass, read_pass]
-  # pam_hap_k <- pam_hap_k(read_allele_flt,
-  #                        max_clust = max_copy_num,
-  #                        min_ploidy = min_copy_num)
-
   phase_cand <- get_phase_candidates(allele_matrix = read_allele_flt,
                                      max_phases = max_copy_num,
                                      min_ploidy = min_copy_num)
@@ -97,7 +93,7 @@ chimclustr <- function(allele_matrix,
 
   hap_em_search <-
     phase_cand$phases %>%
-    group_by(id) %>%
+    group_by(nc) %>%
     summarise(
       label = str_c('nc=', first(nc), ', rep_id=', str_c(rep_id, collapse = ';'), ', ratio=', str_c(ratio, collapse = ':')),
       em_res = list(

@@ -1,4 +1,14 @@
 
+inv_order <- function(ord) {
+  stopifnot(is.integer(ord),
+            is.vector(ord))
+
+  io <- integer(length(ord))
+  for (i in seq_along(ord)) {
+    io[ord[i]] <- i
+  }
+  return(io)
+}
 
 log_add <- function (x, y) {
   .max <- pmax(x, y)

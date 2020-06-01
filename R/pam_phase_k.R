@@ -143,30 +143,3 @@ medoid_impute_missing <- function(med_state, state_matrix) {
   return(replace(med_state, which(is.na(med_state)), repl))
 }
 
-
-enum_hap_ratios <- function(n_haps, min_ploidy = n_haps, max_ploidy = n_haps) {
-
-  map_df(seq.int(min_ploidy, max_ploidy), function(ploidy) {
-    rep(list(seq_len(n_haps)), ploidy) %>%
-      setNames(seq_len(ploidy)) %>%
-      do.call(expand_grid, .) %>%
-      mutate(id = seq_len(n())) %>%
-      pivot_longer(-id, names_to = 'copy', values_to = 'hap') %>%
-      group_by(id, hap) %>%
-      summarise(hap_count = n()) %>%
-      group_by(id) %>%
-      filter(n_distinct(hap) == n_haps,
-             sum(hap_count) == ploidy) %>%
-      mutate(ratio = `if`(n() == 1, 1L, as.integer(hap_count / reduce(hap_count, pracma::gcd)))) %>%
-      ungroup() %>%
-      select(id, hap, ratio) %>%
-      pivot_wider(names_from = hap, values_from = ratio) %>%
-      select(-id) %>%
-      distinct() }) %>%
-    distinct() %>%
-    mutate(id = seq_len(n())) %>%
-    pivot_longer(-id, names_to = 'hap', names_ptypes = list(hap = integer()), values_to = 'ratio') %>%
-    arrange(id, hap) %>%
-    chop(c(hap, ratio)) %>%
-    transmute(ratio = map2(ratio, hap, ~.x[.y]))
-}
